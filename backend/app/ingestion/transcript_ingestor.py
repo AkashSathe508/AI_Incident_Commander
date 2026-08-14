@@ -159,12 +159,12 @@ class TranscriptIngestor:
             "created_at": now_utc.isoformat(),
         }
 
-        # 5. Trigger LangGraph reasoning pipeline (Fact Extraction Node)
+        # 5. Trigger LangGraph full reasoning pipeline (Facts, Assumptions, Decisions, Actions, Conflicts, Timeline, Risks, Verification)
         try:
-            from app.graph.workflow import run_fact_extraction
-            run_fact_extraction(meeting_str, payload)
+            from app.graph.workflow import run_reasoning_pipeline
+            run_reasoning_pipeline(meeting_str, payload)
         except Exception as exc:
-            logger.warning("Error running fact extraction graph node: %s", exc)
+            logger.warning("Error running reasoning graph pipeline: %s", exc)
 
         return payload
 

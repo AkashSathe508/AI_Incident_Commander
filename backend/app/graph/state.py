@@ -1,8 +1,9 @@
 """
-MeetingState — State definition for the AI Incident Commander LangGraph pipeline.
+MeetingState — Expanded State definition for the AI Incident Commander LangGraph pipeline.
 
 Represents the accumulated state for a meeting context, including transcript segments,
-extracted facts, evidence linkages, decisions, and risks.
+extracted facts, assumptions, decisions, action items, conflicts, timeline events, risks,
+and evidence linkages.
 """
 
 from typing import Annotated, Any, TypedDict
@@ -27,4 +28,10 @@ class MeetingState(TypedDict):
     latest_segment: NotRequired[dict[str, Any] | None]
     transcript_segments: Annotated[list[dict[str, Any]], add_items]
     facts: Annotated[list[dict[str, Any]], add_items]
+    assumptions: Annotated[list[dict[str, Any]], add_items]
+    decisions: Annotated[list[dict[str, Any]], add_items]
+    action_items: Annotated[list[dict[str, Any]], add_items]
+    conflicts: Annotated[list[dict[str, Any]], add_items]
+    timeline_events: Annotated[list[dict[str, Any]], add_items]
+    risks: Annotated[list[dict[str, Any]], add_items]
     evidence: Annotated[list[dict[str, Any]], add_items]
