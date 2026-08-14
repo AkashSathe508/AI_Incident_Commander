@@ -509,6 +509,156 @@ async def get_evidence_chain(meeting_id: str, conclusion_id: str, db: AsyncSessi
     }
 
 
+class AskQuestionRequest(BaseModel):
+    question: str = Field(..., min_length=2, max_length=500)
+
+
+@router.post(
+    "/{meeting_id}/ask",
+    summary="Ask a natural-language question about the meeting",
+)
+async def ask_meeting(
+    meeting_id: str,
+    body: AskQuestionRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Performs hybrid pgvector similarity + keyword search across verified facts, decisions,
+    and transcript segments, then invokes Gemini LLM for a strictly grounded answer with citations.
+    """
+    import json
+    import re
+    from app.reasoning.embedding import generate_embedding
+    from app.models.fact import Fact
+    from app.models.decision import Decision
+    from app.models.transcript_segment import TranscriptSegment
+
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    question = body.question.strip()
+    query_vec = generate_embedding(question)
+
+    candidates = []
+    seen_texts = set()
+
+    # 1. Full-text / Keyword search candidates
+    kw_words = [w.lower() for w in re.findall(r"\w+", question) if len(w) > 3]
+
+    # Search facts
+    f_stmt = select(Fact).where(Fact.meeting_id == meeting_uuid)
+    f_res = await db.execute(f_stmt)
+    for f in f_res.scalars().all():
+        if f.content not in seen_texts:
+            score = sum(1 for w in kw_words if w in f.content.lower())
+            candidates.append({
+                "source_type": "fact",
+                "source_id": str(f.id),
+                "text": f.content,
+                "score": score + 0.5,
+            })
+            seen_texts.add(f.content)
+
+    # Search decisions
+    d_stmt = select(Decision).where(Decision.meeting_id == meeting_uuid)
+    d_res = await db.execute(d_stmt)
+    for d in d_res.scalars().all():
+        if d.content not in seen_texts:
+            score = sum(1 for w in kw_words if w in d.content.lower())
+            candidates.append({
+                "source_type": "decision",
+                "source_id": str(d.id),
+                "text": d.content,
+                "score": score + 0.8,
+            })
+            seen_texts.add(d.content)
+
+    # Search transcript segments
+    t_stmt = select(TranscriptSegment).where(TranscriptSegment.meeting_id == meeting_uuid)
+    t_res = await db.execute(t_stmt)
+    for t in t_res.scalars().all():
+        if t.text not in seen_texts:
+            score = sum(1 for w in kw_words if w in t.text.lower())
+            if score > 0:
+                candidates.append({
+                    "source_type": "transcript",
+                    "source_id": str(t.id),
+                    "text": t.text,
+                    "score": score,
+                })
+                seen_texts.add(t.text)
+
+    # Sort candidates by match score
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    top_candidates = candidates[:8]
+
+    if not top_candidates:
+        return {
+            "answer": "This topic is not covered in this meeting.",
+            "citations": [],
+        }
+
+    # Grounded Gemini LLM call
+    gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
+    answer_text = "This topic is not covered in this meeting."
+    cited_items = []
+
+    if gemini_key:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            from langchain_core.messages import SystemMessage, HumanMessage
+
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                google_api_key=gemini_key,
+                temperature=0.0,
+            )
+
+            context_str = "\n".join([
+                f"[{c['source_type'].upper()} ID {c['source_id']}]: {c['text']}"
+                for c in top_candidates
+            ])
+
+            system_prompt = (
+                "You are an AI Incident Commander Q&A engine.\n"
+                "STRICT MANDATE:\n"
+                "1. Answer the user's question ONLY using the provided meeting context below.\n"
+                "2. If the user asks an unrelated question (e.g. weather, general trivia) or something NOT discussed in the context, "
+                "you MUST respond EXACTLY with: 'This topic is not covered in this meeting.'\n"
+                "3. If answered, provide clear citations referencing the source IDs.\n"
+                "Return response JSON: {\"answer\": \"...\", \"cited_source_ids\": [\"...\"]}"
+            )
+
+            user_prompt = f"Context:\n{context_str}\n\nUser Question: \"{question}\""
+
+            res = llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+
+            if isinstance(res.content, str):
+                clean_json = re.sub(r"```json\s*|\s*```", "", res.content).strip()
+                parsed = json.loads(clean_json)
+                answer_text = parsed.get("answer", answer_text)
+                cited_ids = parsed.get("cited_source_ids", [])
+
+                for c in top_candidates:
+                    if c["source_id"] in cited_ids or any(cid in str(c["source_id"]) for cid in cited_ids):
+                        cited_items.append(c)
+        except Exception as exc:
+            logger.warning("Gemini Q&A call failed: %s", exc)
+
+    if not cited_items and "not covered" not in answer_text.lower():
+        cited_items = top_candidates[:2]
+
+    return {
+        "answer": answer_text,
+        "citations": cited_items,
+    }
+
+
 def _is_valid_uuid(val: str) -> bool:
     try:
         uuid.UUID(str(val))

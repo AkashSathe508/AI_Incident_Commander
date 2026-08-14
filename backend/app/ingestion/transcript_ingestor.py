@@ -145,6 +145,13 @@ class TranscriptIngestor:
         except Exception as exc:
             logger.error("Failed to persist transcript segment to DB: %s", exc)
 
+        # Store pgvector embedding for transcript segment
+        try:
+            from app.reasoning.embedding import store_entity_embedding
+            store_entity_embedding(meeting_str, "transcript", str(segment_id), clean_text)
+        except Exception as exc:
+            logger.debug("Transcript segment embedding failed: %s", exc)
+
         payload = {
             "type": "transcript_segment",
             "id": str(segment_id),

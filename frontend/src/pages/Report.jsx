@@ -16,6 +16,32 @@ export default function Report() {
   const [evidenceChain, setEvidenceChain] = useState(null);
   const [loadingEvidence, setLoadingEvidence] = useState(false);
 
+  // Q&A State
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaResult, setQaResult] = useState(null);
+  const [qaLoading, setQaLoading] = useState(false);
+
+  async function handleAskQuestion(e) {
+    e.preventDefault();
+    if (!qaQuestion.trim()) return;
+    setQaLoading(true);
+    setQaResult(null);
+
+    try {
+      const r = await fetch(`${API}/meetings/${id}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: qaQuestion.trim() }),
+      });
+      const data = await r.json();
+      setQaResult(data);
+    } catch (err) {
+      console.error("Ask Q&A error:", err);
+    } finally {
+      setQaLoading(false);
+    }
+  }
+
   useEffect(() => {
     fetch(`${API}/meetings/${id}/report`)
       .then((r) => {
@@ -101,6 +127,46 @@ export default function Report() {
 
       {/* ── Main Content Container ───────────────────────────────────────── */}
       <div style={{ maxWidth: 1040, margin: "2rem auto", padding: "0 1.5rem", width: "100%" }}>
+        {/* ── Natural-Language Q&A Search Box ────────────────────────────── */}
+        <section className="qa-box">
+          <form onSubmit={handleAskQuestion} className="qa-form">
+            <input
+              type="text"
+              className="qa-input"
+              placeholder="Ask a natural-language question about this meeting... (e.g. what did we decide about the rollout?)"
+              value={qaQuestion}
+              onChange={(e) => setQaQuestion(e.target.value)}
+              disabled={qaLoading}
+            />
+            <button type="submit" className="btn-primary" style={{ width: "auto", px: "1.25rem" }} disabled={qaLoading || !qaQuestion.trim()}>
+              {qaLoading ? <span className="spinner" aria-hidden="true" /> : "Ask AI →"}
+            </button>
+          </form>
+
+          {qaResult && (
+            <div className="qa-answer-card">
+              <span className="qa-answer-title">🤖 AI Commander Answer</span>
+              <p className="qa-answer-text">{qaResult.answer}</p>
+
+              {qaResult.citations?.length > 0 && (
+                <div className="citations-wrap">
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", alignSelf: "center" }}>Citations:</span>
+                  {qaResult.citations.map((c, idx) => (
+                    <button
+                      key={idx}
+                      className="citation-badge"
+                      onClick={() => handleInspectEvidence({ id: c.source_id, content: c.text, description: c.text }, c.source_type || "Citation")}
+                    >
+                      <span>📎 [{c.source_type?.toUpperCase() || "SOURCE"}]</span>
+                      <span>"{c.text?.slice(0, 30)}…"</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
         {/* ── Executive Summary Banner ───────────────────────────────────── */}
         <section className="create-card" style={{ maxWidth: "100%", marginBottom: "1.5rem" }}>
           <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#a5b4fc", marginBottom: "0.6rem" }}>

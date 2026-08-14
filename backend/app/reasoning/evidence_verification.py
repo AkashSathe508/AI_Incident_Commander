@@ -60,6 +60,18 @@ def verify_evidence_node(state: MeetingState) -> dict[str, Any]:
         if _has_valid_evidence(r, valid_segment_ids)
     ]
 
+    # Store embeddings for verified facts and decisions (NO assumptions)
+    try:
+        from app.reasoning.embedding import store_entity_embedding
+        for vf in verified_facts:
+            if vf.get("id") and vf.get("content"):
+                store_entity_embedding(meeting_id, "fact", str(vf["id"]), vf["content"])
+        for vd in verified_decisions:
+            if vd.get("id") and vd.get("content"):
+                store_entity_embedding(meeting_id, "decision", str(vd["id"]), vd["content"])
+    except Exception as exc:
+        logger.debug("Verification embedding trigger failed: %s", exc)
+
     logger.info(
         "[EVIDENCE VERIFICATION] Verified meeting %s — facts: %d, assumptions: %d, decisions: %d, actions: %d, conflicts: %d, timeline: %d, risks: %d",
         meeting_id[:8],

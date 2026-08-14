@@ -925,4 +925,89 @@ body {
   line-height: 1.45;
 }
 
+/* ── Ask Q&A Component ─────────────────────────────────────────────────────── */
+.qa-box {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.qa-form {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.qa-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  color: var(--text);
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.qa-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.qa-answer-card {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.qa-answer-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #a5b4fc;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.qa-answer-text {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.citations-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--accent);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 99px;
+  padding: 0.25rem 0.65rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.citation-badge:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+
 

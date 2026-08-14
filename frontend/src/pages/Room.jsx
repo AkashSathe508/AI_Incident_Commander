@@ -38,6 +38,32 @@ export default function Room() {
   // ── Evidence Inspector Drawer State ───────────────────────────────────────
   const [selectedItemForEvidence, setSelectedItemForEvidence] = useState(null);
 
+  // ── Q&A State ─────────────────────────────────────────────────────────────
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaResult, setQaResult] = useState(null);
+  const [qaLoading, setQaLoading] = useState(false);
+
+  async function handleAskQuestion(e) {
+    e.preventDefault();
+    if (!qaQuestion.trim()) return;
+    setQaLoading(true);
+    setQaResult(null);
+
+    try {
+      const r = await fetch(`${API}/meetings/${id}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: qaQuestion.trim() }),
+      });
+      const data = await r.json();
+      setQaResult(data);
+    } catch (err) {
+      console.error("Ask Q&A error:", err);
+    } finally {
+      setQaLoading(false);
+    }
+  }
+
   // ── Mic state ────────────────────────────────────────────────────────────
   const [micMuted, setMicMuted] = useState(false);
 
@@ -379,6 +405,44 @@ export default function Room() {
                 <span>AI Intelligence</span>
                 <span className="transcript-badge">LangGraph</span>
               </h3>
+            </div>
+
+            {/* Q&A Ask Box */}
+            <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)" }}>
+              <form onSubmit={handleAskQuestion} style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  type="text"
+                  className="qa-input"
+                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.8125rem" }}
+                  placeholder="Ask AI about this call..."
+                  value={qaQuestion}
+                  onChange={(e) => setQaQuestion(e.target.value)}
+                  disabled={qaLoading}
+                />
+                <button type="submit" className="btn-primary" style={{ width: "auto", padding: "0.45rem 0.85rem", fontSize: "0.8125rem" }} disabled={qaLoading || !qaQuestion.trim()}>
+                  {qaLoading ? <span className="spinner" aria-hidden="true" style={{ width: 14, height: 14 }} /> : "Ask"}
+                </button>
+              </form>
+
+              {qaResult && (
+                <div className="qa-answer-card" style={{ marginTop: "0.75rem", padding: "0.75rem" }}>
+                  <span className="qa-answer-title">🤖 Answer</span>
+                  <p className="qa-answer-text" style={{ fontSize: "0.8125rem" }}>{qaResult.answer}</p>
+                  {qaResult.citations?.length > 0 && (
+                    <div className="citations-wrap">
+                      {qaResult.citations.map((c, idx) => (
+                        <button
+                          key={idx}
+                          className="citation-badge"
+                          onClick={() => setSelectedItemForEvidence({ id: c.source_id, content: c.text, description: c.text, itemType: c.source_type || "Citation" })}
+                        >
+                          📎 {c.source_type?.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Navigation Tabs */}
