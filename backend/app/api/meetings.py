@@ -338,6 +338,185 @@ async def get_meeting(
     )
 
 
+@router.post(
+    "/{meeting_id}/end",
+    summary="End a meeting — triggers Final Synthesis report generation",
+)
+async def end_meeting(
+    meeting_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Ends the meeting session, stops the AI agent subprocess, and triggers
+    the Final Synthesis LangGraph node to produce an executive post-incident report.
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+
+    meeting.status = "ended"
+    meeting.ended_at = func.now()
+    await db.commit()
+
+    # Stop AI agent subprocess if running
+    await agent_manager.stop_agent(meeting_id)
+
+    # Schedule Final Synthesis in background task
+    from app.reasoning.final_synthesis import generate_final_synthesis
+    background_tasks.add_task(generate_final_synthesis, meeting_id)
+
+    return {"meeting_id": meeting_id, "status": "ended", "synthesis_triggered": True}
+
+
+@router.get(
+    "/{meeting_id}/report",
+    summary="Get full synthesized post-incident report",
+)
+async def get_report(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """
+    Returns full synthesized post-incident report containing executive summary,
+    timeline, facts, decisions, action items, conflicts, risks, and unresolved questions.
+    """
+    import json
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+
+    # If description is JSON string, parse it
+    report_meta = {}
+    if meeting.description:
+        try:
+            report_meta = json.loads(meeting.description)
+        except Exception:
+            report_meta = {"executive_summary": meeting.description, "unresolved_questions": []}
+
+    # Fetch facts, decisions, action items, conflicts, risks, timeline
+    from app.models.fact import Fact
+    from app.models.decision import Decision
+    from app.models.action_item import ActionItem
+    from app.models.conflict import Conflict
+    from app.models.risk import Risk
+    from app.models.timeline_event import TimelineEvent
+
+    facts_res = await db.execute(select(Fact).where(Fact.meeting_id == meeting_uuid))
+    dec_res = await db.execute(select(Decision).where(Decision.meeting_id == meeting_uuid))
+    act_res = await db.execute(select(ActionItem).where(ActionItem.meeting_id == meeting_uuid))
+    conf_res = await db.execute(select(Conflict).where(Conflict.meeting_id == meeting_uuid))
+    risk_res = await db.execute(select(Risk).where(Risk.meeting_id == meeting_uuid))
+    time_res = await db.execute(select(TimelineEvent).where(TimelineEvent.meeting_id == meeting_uuid).order_by(TimelineEvent.occurred_at.asc()))
+
+    return {
+        "meeting_id": meeting_id,
+        "title": meeting.title,
+        "status": meeting.status,
+        "created_at": meeting.created_at.isoformat() if meeting.created_at else None,
+        "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
+        "executive_summary": report_meta.get("executive_summary", f"Incident response report for {meeting.title}"),
+        "unresolved_questions": report_meta.get("unresolved_questions", []),
+        "facts": [{"id": str(f.id), "content": f.content, "confidence": f.confidence} for f in facts_res.scalars().all()],
+        "decisions": [{"id": str(d.id), "content": d.content, "rationale": d.rationale} for d in dec_res.scalars().all()],
+        "action_items": [{"id": str(a.id), "description": a.description, "due_date": str(a.due_date) if a.due_date else None, "status": a.status} for a in act_res.scalars().all()],
+        "conflicts": [{"id": str(c.id), "description": c.description, "status": c.status} for c in conf_res.scalars().all()],
+        "risks": [{"id": str(r.id), "description": r.description, "severity": r.severity, "status": r.status} for r in risk_res.scalars().all()],
+        "timeline_events": [{"id": str(t.id), "event_type": t.event_type, "description": t.description, "occurred_at": t.occurred_at.isoformat()} for t in time_res.scalars().all()],
+    }
+
+
+@router.get(
+    "/{meeting_id}/evidence/{conclusion_id}",
+    summary="Recursive evidence lookup back to transcript segments",
+)
+async def get_evidence_chain(meeting_id: str, conclusion_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """
+    Performs a recursive evidence lookup tracing a claim/conclusion ID through the evidence table
+    back to the exact target transcript segments, speaker names, and timestamps.
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    from app.models.evidence import Evidence
+    from app.models.transcript_segment import TranscriptSegment
+
+    # Query evidence rows matching conclusion_id
+    ev_stmt = select(Evidence).where(
+        Evidence.meeting_id == meeting_uuid,
+        (Evidence.source_id == conclusion_id) | (Evidence.id == uuid.UUID(conclusion_id) if _is_valid_uuid(conclusion_id) else False)
+    )
+    ev_result = await db.execute(ev_stmt)
+    evidence_rows = ev_result.scalars().all()
+
+    # Query matching transcript segments
+    segment_ids = []
+    for e in evidence_rows:
+        if e.source_id and _is_valid_uuid(e.source_id):
+            segment_ids.append(uuid.UUID(e.source_id))
+
+    transcript_items = []
+    if segment_ids:
+        t_stmt = select(TranscriptSegment).where(TranscriptSegment.id.in_(segment_ids))
+        t_res = await db.execute(t_stmt)
+        for t in t_res.scalars().all():
+            transcript_items.append({
+                "segment_id": str(t.id),
+                "text": t.text,
+                "start_ms": t.start_ms,
+                "end_ms": t.end_ms,
+                "speaker": f"Speaker {str(t.participant_id)[:8]}" if t.participant_id else "Speaker",
+            })
+
+    if not transcript_items:
+        # Fallback query transcript segments directly matching conclusion_id
+        if _is_valid_uuid(conclusion_id):
+            t_stmt = select(TranscriptSegment).where(TranscriptSegment.id == uuid.UUID(conclusion_id))
+            t_res = await db.execute(t_stmt)
+            for t in t_res.scalars().all():
+                transcript_items.append({
+                    "segment_id": str(t.id),
+                    "text": t.text,
+                    "start_ms": t.start_ms,
+                    "end_ms": t.end_ms,
+                    "speaker": f"Speaker {str(t.participant_id)[:8]}" if t.participant_id else "Speaker",
+                })
+
+    return {
+        "meeting_id": meeting_id,
+        "conclusion_id": conclusion_id,
+        "evidence_entries": [
+            {
+                "id": str(e.id),
+                "content": e.content,
+                "source_type": e.source_type,
+                "source_id": e.source_id,
+            }
+            for e in evidence_rows
+        ],
+        "transcript_chain": transcript_items,
+    }
+
+
+def _is_valid_uuid(val: str) -> bool:
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
@@ -363,3 +542,4 @@ async def _start_agent_task(meeting_id: str) -> None:
             "Auto-agent start failed for meeting %s: %s",
             meeting_id[:8], exc,
         )
+

@@ -200,6 +200,20 @@ export default function Room() {
     }
   }
 
+  // ── End meeting ───────────────────────────────────────────────────────────
+  async function endMeeting() {
+    try {
+      await fetch(`${API}/meetings/${id}/end`, { method: "POST" });
+    } catch (err) {
+      console.warn("End meeting error:", err);
+    }
+    micTrackRef.current?.close();
+    micTrackRef.current = null;
+    await clientRef.current?.leave().catch(() => {});
+    clientRef.current = null;
+    navigate(`/room/${id}/report`);
+  }
+
   // ── Leave room ────────────────────────────────────────────────────────────
   async function leaveRoom() {
     micTrackRef.current?.close();
@@ -272,9 +286,14 @@ export default function Room() {
           </div>
         </div>
         {phase === "live" && (
-          <button onClick={leaveRoom} className="btn-leave" id="leave-btn">
-            Leave
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button onClick={endMeeting} className="btn-leave" id="end-btn" style={{ background: "rgba(99,102,241,0.2)", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.4)" }}>
+              End Meeting &amp; Report →
+            </button>
+            <button onClick={leaveRoom} className="btn-leave" id="leave-btn">
+              Leave
+            </button>
+          </div>
         )}
       </header>
 
