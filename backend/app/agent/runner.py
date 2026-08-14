@@ -1,21 +1,15 @@
 """
-Agora AI Agent Runner — standalone process.
+Agora AI Agent Runner — standalone process with Deepgram Real-Time STT.
 
 Joins an Agora channel as a headless participant (UID in reserved range
-900_000_001–999_999_999), subscribes to all remote audio streams, and
-logs per-speaker frame counts every 5 seconds.
+900_000_001–999_999_999), subscribes to all remote audio streams, streams
+per-speaker PCM audio into Deepgram Live STT, persists normalized transcript
+segments to PostgreSQL, and broadcasts live segments to WebSocket clients.
 
 Usage (inside Docker container):
     python runner.py --meeting-id <uuid>
 
 Platform: Linux / macOS (agora_python_server_sdk wraps a native .so).
-          This script will exit with code 2 on Windows.
-
-Important SDK constraint (from official README):
-    "A process can only have one instance" — the AgoraService singleton
-    lives for the entire lifetime of this process.
-    "In all observers/callbacks, do NOT call SDK APIs." — we only
-    increment counters inside on_playback_audio_frame_before_mixing.
 """
 
 import argparse
@@ -28,6 +22,11 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from typing import Any
+
+import httpx
+
+from app.ingestion.transcript_ingestor import transcript_ingestor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,8 +67,7 @@ def _make_token(app_id: str, app_cert: str, channel: str, uid: int) -> str | Non
 def _get_channel_name(meeting_id: str) -> str:
     """
     Fetch channel_name from PostgreSQL synchronously.
-    Uses psycopg2-binary (already in requirements) via SQLAlchemy sync engine.
-    The DATABASE_URL may have '+asyncpg' driver suffix; strip it for sync use.
+    Uses psycopg2-binary via SQLAlchemy sync engine.
     """
     from sqlalchemy import create_engine, text  # type: ignore
 
@@ -77,7 +75,6 @@ def _get_channel_name(meeting_id: str) -> str:
     if not raw_url:
         raise RuntimeError("DATABASE_URL environment variable is not set")
 
-    # Convert async driver URL → sync psycopg2 URL
     sync_url = raw_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
 
     engine = create_engine(sync_url, pool_pre_ping=True)
@@ -98,6 +95,136 @@ def _get_channel_name(meeting_id: str) -> str:
     return channel_name
 
 
+# ── Deepgram Stream Manager ────────────────────────────────────────────────────
+
+class DeepgramManager:
+    """
+    Manages real-time per-speaker Deepgram STT connections.
+    """
+
+    def __init__(self, meeting_id: str, loop: asyncio.AbstractEventLoop) -> None:
+        self.meeting_id = meeting_id
+        self.loop = loop
+        self.api_key = os.environ.get("DEEPGRAM_API_KEY", "")
+        self.audio_queue: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue()
+        self.dg_connections: dict[int, Any] = {}
+        self.start_time = time.monotonic()
+        self._worker_task: asyncio.Task | None = None
+        self._httpx_client: httpx.AsyncClient | None = None
+
+        if not self.api_key:
+            logger.warning(
+                "DEEPGRAM_API_KEY environment variable is not set — "
+                "live speech-to-text transcription will be disabled"
+            )
+
+    async def start() -> None:
+        """Start the background audio processing worker."""
+        self._httpx_client = httpx.AsyncClient(timeout=5.0)
+        self._worker_task = asyncio.create_task(self._process_audio_queue())
+        logger.info("Deepgram manager started for meeting %s", self.meeting_id[:8])
+
+    async def stop() -> None:
+        """Close Deepgram connections and stop worker."""
+        if self._worker_task:
+            self._worker_task.cancel()
+        if self._httpx_client:
+            await self._httpx_client.aclose()
+        for uid, conn in self.dg_connections.items():
+            try:
+                await conn.finish()
+            except Exception:
+                pass
+        logger.info("Deepgram manager stopped")
+
+    def enqueue_audio(self, uid: int, pcm_bytes: bytes) -> None:
+        """Thread-safe enqueue from Agora callback into asyncio queue."""
+        if self.api_key and pcm_bytes:
+            self.loop.call_soon_threadsafe(self.audio_queue.put_nowait, (uid, pcm_bytes))
+
+    async def _get_or_create_connection(self, uid: int) -> Any:
+        if uid in self.dg_connections:
+            return self.dg_connections[uid]
+
+        try:
+            from deepgram import (  # type: ignore
+                DeepgramClient,
+                LiveTranscriptionEvents,
+                LiveOptions,
+            )
+        except ImportError:
+            logger.error("deepgram-sdk package not installed")
+            return None
+
+        try:
+            client = DeepgramClient(self.api_key)
+            dg_conn = client.listen.asyncwebsocket.v("1")
+
+            async def _on_transcript(self_dg, result, **kwargs):
+                try:
+                    sentence = result.channel.alternatives[0].transcript
+                    if sentence and sentence.strip():
+                        rel_start = getattr(result, "start", 0.0)
+                        rel_duration = getattr(result, "duration", 1.0)
+                        start_ms = int(rel_start * 1000)
+                        end_ms = int((rel_start + rel_duration) * 1000)
+                        confidence = result.channel.alternatives[0].confidence
+
+                        payload = transcript_ingestor.process_and_save(
+                            meeting_id=self.meeting_id,
+                            speaker_id=str(uid),
+                            text_content=sentence,
+                            start_ms=start_ms,
+                            end_ms=end_ms,
+                            confidence=confidence,
+                            speaker_name=f"Speaker {uid}",
+                        )
+
+                        if payload and self._httpx_client:
+                            # Broadcast payload to backend WebSocket clients
+                            backend_url = os.environ.get(
+                                "BACKEND_INTERNAL_URL", "http://127.0.0.1:8000"
+                            )
+                            url = f"{backend_url}/api/meetings/{self.meeting_id}/broadcast"
+                            try:
+                                await self._httpx_client.post(url, json=payload)
+                            except Exception as exc:
+                                logger.warning("Broadcast post failed: %s", exc)
+                except Exception as exc:
+                    logger.error("Error processing Deepgram transcript callback: %s", exc)
+
+            dg_conn.on(LiveTranscriptionEvents.Transcript, _on_transcript)
+
+            options = LiveOptions(
+                model="nova-2",
+                language="en-US",
+                encoding="linear16",
+                sample_rate=16000,
+                channels=1,
+                interim_results=False,
+            )
+            await dg_conn.start(options)
+            self.dg_connections[uid] = dg_conn
+            logger.info("Created Deepgram live stream for speaker UID %d", uid)
+            return dg_conn
+        except Exception as exc:
+            logger.error("Failed to create Deepgram connection for UID %d: %s", uid, exc)
+            return None
+
+    async def _process_audio_queue(self) -> None:
+        while True:
+            try:
+                uid, pcm_bytes = await self.audio_queue.get()
+                conn = await self._get_or_create_connection(uid)
+                if conn:
+                    await conn.send(pcm_bytes)
+                self.audio_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("Error streaming PCM bytes to Deepgram: %s", exc)
+
+
 # ── Audio frame observer ───────────────────────────────────────────────────────
 
 class FrameCounterObserver:
@@ -105,22 +232,15 @@ class FrameCounterObserver:
     Implements the Agora audio frame observer interface.
 
     on_playback_audio_frame_before_mixing is called for each decoded audio frame
-    from a remote speaker BEFORE it is mixed with other streams — this gives us
-    per-speaker attribution.
-
-    ⚠️  Per Agora SDK docs: "Do NOT call SDK APIs inside callbacks."
-        We only increment a counter (O(1), no allocation).
+    from a remote speaker BEFORE it is mixed with other streams.
     """
 
-    def __init__(self):
+    def __init__(self, dg_manager: DeepgramManager | None = None):
         self._counts: dict[int, int] = defaultdict(int)
+        self.dg_manager = dg_manager
 
     def snapshot(self) -> dict[int, int]:
-        """Thread-safe-enough snapshot — CPython GIL protects dict reads."""
         return dict(self._counts)
-
-    # ── Required observer interface methods ────────────────────────────────────
-    # Return True (allow frame to pass through) for all callbacks we don't need.
 
     def on_record_audio_frame(self, audio_frame) -> bool:
         return True
@@ -135,16 +255,18 @@ class FrameCounterObserver:
         return True
 
     def on_playback_audio_frame_before_mixing(self, uid, audio_frame) -> bool:
-        """
-        Called per remote speaker per audio frame (~every 10–20 ms).
-        uid  — remote user's numeric UID (int or str depending on SDK version)
-        audio_frame — PCM buffer object (not inspected here)
-        """
         try:
-            self._counts[int(uid)] += 1
+            n_uid = int(uid)
+            self._counts[n_uid] += 1
+
+            if self.dg_manager and hasattr(audio_frame, "buffer"):
+                buf = audio_frame.buffer
+                if buf:
+                    pcm_bytes = bytes(buf)
+                    self.dg_manager.enqueue_audio(n_uid, pcm_bytes)
         except Exception:
-            pass  # silently ignore any type conversion failures
-        return True  # allow frame to continue through the pipeline
+            pass
+        return True
 
 
 # ── Main agent coroutine ───────────────────────────────────────────────────────
@@ -168,13 +290,14 @@ async def run_agent(meeting_id: str) -> None:
 
     # ── Step 3: Generate initial join token ────────────────────────────────────
     token = _make_token(app_id, app_cert, channel_name, agent_uid)
-    if token:
-        logger.info("RTC token generated (AccessToken2, expires in 1 h)")
-    else:
-        logger.warning("No AGORA_APP_CERTIFICATE set — using null token (test mode only)")
     token_ts = time.monotonic()
 
-    # ── Step 4: Import agora_python_server_sdk (Linux / macOS only) ───────────
+    # ── Step 4: Setup Deepgram manager ─────────────────────────────────────────
+    loop = asyncio.get_running_loop()
+    dg_manager = DeepgramManager(meeting_id, loop)
+    await dg_manager.start()
+
+    # ── Step 5: Import agora_python_server_sdk ─────────────────────────
     try:
         from agora.rtc.agora_service import (  # type: ignore
             AgoraService,
@@ -194,20 +317,21 @@ async def run_agent(meeting_id: str) -> None:
             "This SDK requires Linux or macOS. "
             "The agent must run inside the Docker container."
         )
+        await dg_manager.stop()
         sys.exit(2)
 
-    # ── Step 5: Initialize the Agora service (one per process) ────────────────
+    # ── Step 6: Initialize Agora Service ──────────────────────────────────────
     logger.info("Initializing AgoraService...")
     agora_service = AgoraService()
     svc_cfg = AgoraServiceConfig()
     svc_cfg.appid = app_id
     svc_cfg.enable_audio_processor = True
-    svc_cfg.enable_audio_device = False   # headless — no sound card
+    svc_cfg.enable_audio_device = False
     svc_cfg.enable_video = False
     agora_service.initialize(svc_cfg)
     logger.info("AgoraService initialized")
 
-    # ── Step 6: Configure and create RTC connection ────────────────────────────
+    # ── Step 7: Configure and create RTC connection ────────────────────────────
     conn_cfg = RTCConnConfig(
         client_role_type=ClientRoleType.CLIENT_ROLE_BROADCASTER,
         channel_profile=ChannelProfileType.CHANNEL_PROFILE_LIVE_BROADCASTING,
@@ -215,26 +339,25 @@ async def run_agent(meeting_id: str) -> None:
     pub_cfg = RtcConnectionPublishConfig(
         audio_profile=AudioProfileType.AUDIO_PROFILE_DEFAULT,
         audio_scenario=AudioScenarioType.AUDIO_SCENARIO_AI_SERVER,
-        is_publish_audio=False,   # subscribe-only for now; set True to inject audio
+        is_publish_audio=False,
         is_publish_video=False,
     )
     conn = agora_service.create_rtc_connection(conn_cfg, pub_cfg)
 
-    # ── Step 7: Register audio frame observer ─────────────────────────────────
-    observer = FrameCounterObserver()
+    # ── Step 8: Register audio frame observer ─────────────────────────────────
+    observer = FrameCounterObserver(dg_manager)
     conn.register_audio_frame_observer(observer)
-    logger.info("Audio frame observer registered")
+    logger.info("Audio frame observer registered with Deepgram STT stream integration")
 
-    # ── Step 8: Connect ────────────────────────────────────────────────────────
+    # ── Step 9: Connect ────────────────────────────────────────────────────────
     conn.connect(token, channel_name, str(agent_uid))
     logger.info(
         f"Connected to Agora channel '{channel_name}' "
         f"(uid={agent_uid}, meeting={meeting_id[:8]}...)"
     )
 
-    # ── Step 9: Run event loop — stats every 5 s + token renewal at 55 min ────
+    # ── Step 10: Event loop ───────────────────────────────────────────────────
     stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
 
     def _on_signal(*_):
         logger.info("Shutdown signal received")
@@ -244,77 +367,64 @@ async def run_agent(meeting_id: str) -> None:
         try:
             loop.add_signal_handler(sig, _on_signal)
         except (NotImplementedError, RuntimeError):
-            # Windows or non-main-thread fallback
             signal.signal(sig, _on_signal)
 
     last_stats = time.monotonic()
 
-    while not stop_event.is_set():
-        await asyncio.sleep(1)
-        now = time.monotonic()
-
-        # ── Periodic frame-count log ───────────────────────────────────────────
-        if now - last_stats >= STATS_INTERVAL:
-            snap = observer.snapshot()
-            if snap:
-                parts = " | ".join(
-                    f"uid={uid}: {count} frames"
-                    for uid, count in sorted(snap.items())
-                )
-                logger.info(f"[FRAMES meeting={meeting_id[:8]}] {parts}")
-            else:
-                logger.info(
-                    f"[FRAMES meeting={meeting_id[:8]}] "
-                    "No remote audio yet — waiting for speakers..."
-                )
-            last_stats = now
-
-        # ── Token renewal before expiry (55-minute mark) ──────────────────────
-        if app_cert and (now - token_ts) >= TOKEN_RENEWAL_AT:
-            logger.info("Renewing Agora token (55-minute mark reached)...")
-            new_token = _make_token(app_id, app_cert, channel_name, agent_uid)
-            if new_token:
-                # Try both known method names; SDK source not fully accessible
-                renewed = False
-                for method_name in ("renew_agora_token", "renew_token"):
-                    fn = getattr(conn, method_name, None)
-                    if fn is not None:
-                        try:
-                            fn(new_token)
-                            renewed = True
-                            token = new_token
-                            token_ts = time.monotonic()
-                            logger.info(f"Token renewed via conn.{method_name}()")
-                            break
-                        except Exception as exc:
-                            logger.warning(f"conn.{method_name}() failed: {exc}")
-                if not renewed:
-                    logger.warning(
-                        "Token renewal failed — neither renew_agora_token() nor "
-                        "renew_token() succeeded. Session may expire in ~5 minutes."
-                    )
-
-    # ── Step 10: Graceful shutdown ─────────────────────────────────────────────
-    logger.info("Disconnecting...")
     try:
-        conn.disconnect()
-        conn.release()
-        agora_service.release()
-        logger.info("Agent shut down cleanly")
-    except Exception as exc:
-        logger.warning(f"Shutdown error (non-fatal): {exc}")
+        while not stop_event.is_set():
+            await asyncio.sleep(1)
+            now = time.monotonic()
 
+            if now - last_stats >= STATS_INTERVAL:
+                snap = observer.snapshot()
+                if snap:
+                    parts = " | ".join(
+                        f"uid={uid}: {count} frames"
+                        for uid, count in sorted(snap.items())
+                    )
+                    logger.info(f"[FRAMES meeting={meeting_id[:8]}] {parts}")
+                else:
+                    logger.info(
+                        f"[FRAMES meeting={meeting_id[:8]}] "
+                        "No remote audio yet — waiting for speakers..."
+                    )
+                last_stats = now
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+            if app_cert and (now - token_ts) >= TOKEN_RENEWAL_AT:
+                logger.info("Renewing Agora token...")
+                new_token = _make_token(app_id, app_cert, channel_name, agent_uid)
+                if new_token:
+                    for method_name in ("renew_agora_token", "renew_token"):
+                        fn = getattr(conn, method_name, None)
+                        if fn is not None:
+                            try:
+                                fn(new_token)
+                                token = new_token
+                                token_ts = time.monotonic()
+                                logger.info(f"Token renewed via conn.{method_name}()")
+                                break
+                            except Exception as exc:
+                                logger.warning(f"conn.{method_name}() failed: {exc}")
+    finally:
+        logger.info("Disconnecting and cleaning up...")
+        await dg_manager.stop()
+        try:
+            conn.disconnect()
+            conn.release()
+            agora_service.release()
+            logger.info("Agent shut down cleanly")
+        except Exception as exc:
+            logger.warning(f"Shutdown error (non-fatal): {exc}")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Agora AI Agent — headless channel participant"
+        description="Agora AI Agent — headless channel participant with Deepgram STT"
     )
     parser.add_argument("--meeting-id", required=True, help="Meeting UUID")
     args = parser.parse_args()
 
-    # Validate UUID format early
     try:
         meeting_id = str(uuid.UUID(args.meeting_id))
     except ValueError:

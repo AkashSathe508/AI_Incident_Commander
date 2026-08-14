@@ -1,0 +1,166 @@
+"""
+Transcript Ingestion Service.
+
+Normalizes incoming Deepgram speech-to-text segments, deduplicates on
+(meeting_id, speaker_id/uid, start_ms), persists to PostgreSQL, and broadcasts
+the segment to all connected WebSocket clients in real-time.
+"""
+
+import logging
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+class TranscriptIngestor:
+    """
+    Ingests, deduplicates, persists, and broadcasts real-time transcript segments.
+    """
+
+    def __init__(self) -> None:
+        # In-memory deduplication cache: set of (meeting_id_str, speaker_key, start_ms)
+        self._seen_segments: set[tuple[str, str, int]] = set()
+
+    def process_and_save(
+        self,
+        meeting_id: str,
+        speaker_id: str,  # Agora UID or Participant UUID as string
+        text_content: str,
+        start_ms: int,
+        end_ms: int,
+        confidence: float | None = 1.0,
+        speaker_name: str | None = None,
+        participant_uuid: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Processes a transcript segment:
+        1. Clean and validate text
+        2. Check deduplication key (meeting_id, speaker_id, start_ms)
+        3. Insert into PostgreSQL transcript_segments table
+        4. Return dict payload ready for WebSocket broadcast
+        """
+        clean_text = text_content.strip()
+        if not clean_text:
+            return None
+
+        meeting_str = str(meeting_id)
+        dedup_key = (meeting_str, str(speaker_id), int(start_ms))
+
+        # Check in-memory deduplication cache first
+        if dedup_key in self._seen_segments:
+            logger.debug("Deduplicated in-memory segment: %s", dedup_key)
+            return None
+
+        self._seen_segments.add(dedup_key)
+
+        # Limit cache size to prevent memory bloat (keep last 10,000 segments)
+        if len(self._seen_segments) > 10_000:
+            # Clear older half arbitrarily or pop
+            self._seen_segments = set(list(self._seen_segments)[5_000:])
+
+        segment_id = uuid.uuid4()
+        now_utc = datetime.now(timezone.utc)
+
+        # Prepare DB insert
+        raw_url = os.environ.get("DATABASE_URL", "")
+        if not raw_url:
+            logger.warning("DATABASE_URL not set — transcript segment will not be persisted")
+            return {
+                "type": "transcript_segment",
+                "id": str(segment_id),
+                "meeting_id": meeting_str,
+                "speaker_id": str(speaker_id),
+                "speaker_name": speaker_name or f"Speaker {speaker_id}",
+                "participant_id": participant_uuid,
+                "text": clean_text,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "confidence": confidence,
+                "created_at": now_utc.isoformat(),
+            }
+
+        sync_url = raw_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+
+        try:
+            part_id_uuid = uuid.UUID(participant_uuid) if participant_uuid else None
+        except ValueError:
+            part_id_uuid = None
+
+        try:
+            engine = create_engine(sync_url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                # DB-level deduplication check
+                check_sql = text("""
+                    SELECT id FROM transcript_segments
+                    WHERE meeting_id = :meeting_id AND start_ms = :start_ms AND text = :text
+                    LIMIT 1
+                """)
+                existing = conn.execute(
+                    check_sql,
+                    {
+                        "meeting_id": uuid.UUID(meeting_str),
+                        "start_ms": start_ms,
+                        "text": clean_text,
+                    },
+                ).first()
+
+                if existing:
+                    logger.info("Deduplicated DB segment for meeting %s at %d ms", meeting_str[:8], start_ms)
+                    engine.dispose()
+                    return None
+
+                insert_sql = text("""
+                    INSERT INTO transcript_segments
+                    (id, meeting_id, participant_id, text, start_ms, end_ms, confidence, created_at)
+                    VALUES
+                    (:id, :meeting_id, :participant_id, :text, :start_ms, :end_ms, :confidence, :created_at)
+                """)
+                conn.execute(
+                    insert_sql,
+                    {
+                        "id": segment_id,
+                        "meeting_id": uuid.UUID(meeting_str),
+                        "participant_id": part_id_uuid,
+                        "text": clean_text,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "confidence": confidence,
+                        "created_at": now_utc,
+                    },
+                )
+                conn.commit()
+            engine.dispose()
+            logger.info(
+                "[INGEST] Saved transcript segment meeting=%s speaker=%s text='%s'",
+                meeting_str[:8],
+                speaker_name or speaker_id,
+                clean_text[:40],
+            )
+        except Exception as exc:
+            logger.error("Failed to persist transcript segment to DB: %s", exc)
+
+        payload = {
+            "type": "transcript_segment",
+            "id": str(segment_id),
+            "meeting_id": meeting_str,
+            "speaker_id": str(speaker_id),
+            "speaker_name": speaker_name or f"Speaker {speaker_id}",
+            "participant_id": participant_uuid,
+            "text": clean_text,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "confidence": confidence,
+            "created_at": now_utc.isoformat(),
+        }
+
+        return payload
+
+
+# Ingestor instance
+transcript_ingestor = TranscriptIngestor()

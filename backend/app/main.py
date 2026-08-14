@@ -27,9 +27,11 @@ def create_app() -> FastAPI:
     # ── Routes ────────────────────────────────────────────────────────────────
     from app.api.health import router as health_router
     from app.api.meetings import router as meetings_router
+    from app.api.ws import router as ws_router
 
     application.include_router(health_router, prefix="/health", tags=["health"])
     application.include_router(meetings_router, prefix="/api/meetings", tags=["meetings"])
+    application.include_router(ws_router, tags=["websocket", "transcripts"])
 
     return application
 
