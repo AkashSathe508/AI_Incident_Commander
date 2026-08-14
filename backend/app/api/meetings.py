@@ -51,21 +51,29 @@ def _generate_agora_token(channel_name: str, uid: int) -> str | None:
     Returns None when AGORA_APP_CERTIFICATE is not set — Agora allows null
     tokens when the project's "App Certificate" feature is disabled in the
     Agora Console (useful for local development / testing).
+
+    agora-token-builder==1.0.0 API:
+        RtcTokenBuilder.buildTokenWithUid(
+            appId, appCertificate, channelName, uid,
+            role,                       # 1 = Role_Publisher
+            privilegeExpiredTs,         # absolute Unix timestamp
+        )
     """
     if not settings.agora_app_certificate or not settings.agora_app_id:
         return None  # Test-mode: Agora will accept null token
 
     try:
+        import time
         from agora_token_builder import RtcTokenBuilder  # type: ignore[import]
 
-        return RtcTokenBuilder.build_token_with_uid(
+        privilege_expired_ts = int(time.time()) + _TOKEN_EXPIRY_SECONDS
+        return RtcTokenBuilder.buildTokenWithUid(
             settings.agora_app_id,
             settings.agora_app_certificate,
             channel_name,
             uid,
-            role=1,  # Role_Publisher — can publish + subscribe
-            token_expire=_TOKEN_EXPIRY_SECONDS,
-            privilege_expire=0,  # 0 = same lifetime as token_expire
+            1,                      # role = Role_Publisher
+            privilege_expired_ts,   # absolute expiry timestamp
         )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(

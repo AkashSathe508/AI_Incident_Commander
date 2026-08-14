@@ -25,8 +25,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ── Enable pgvector extension ─────────────────────────────────────────────
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # ── Enable pgvector extension if available ──────────────────────────────────
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+                CREATE EXTENSION IF NOT EXISTS vector;
+            END IF;
+        END $$;
+        """
+    )
 
     # ── meetings ──────────────────────────────────────────────────────────────
     op.create_table(
@@ -384,22 +393,25 @@ def upgrade() -> None:
             server_default=sa.text("NOW()"),
         ),
     )
-    # Replace placeholder Text column with proper vector type
-    op.execute("ALTER TABLE embeddings ALTER COLUMN vector TYPE vector(1536) USING vector::vector(1536)")
     op.create_index("ix_embeddings_id", "embeddings", ["id"])
     op.create_index("ix_embeddings_source_type", "embeddings", ["source_type"])
     op.create_index("ix_embeddings_source_id", "embeddings", ["source_id"])
     op.create_index(
         "ix_embeddings_source", "embeddings", ["source_type", "source_id"]
     )
-    # IVFFlat ANN index — requires at least some rows to train, so we defer
-    # with IF NOT EXISTS semantics. In production run AFTER bulk insert.
+    # Replace placeholder Text column with proper vector type if pgvector extension exists
     op.execute(
         """
-        CREATE INDEX IF NOT EXISTS ix_embeddings_vector_ivfflat
-        ON embeddings
-        USING ivfflat (vector vector_cosine_ops)
-        WITH (lists = 100)
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+                ALTER TABLE embeddings ALTER COLUMN vector TYPE vector(1536) USING vector::vector(1536);
+                CREATE INDEX IF NOT EXISTS ix_embeddings_vector_ivfflat
+                ON embeddings
+                USING ivfflat (vector vector_cosine_ops)
+                WITH (lists = 100);
+            END IF;
+        END $$;
         """
     )
 

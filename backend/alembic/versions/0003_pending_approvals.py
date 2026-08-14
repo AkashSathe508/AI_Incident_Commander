@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("action_type", sa.String(50), nullable=False),
         sa.Column("title", sa.String(255), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("payload", postgresql.JSONB(as_text=True), nullable=False),
+        sa.Column("payload", postgresql.JSONB(), nullable=False),
         sa.Column("status", sa.String(50), nullable=False, server_default="pending"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),

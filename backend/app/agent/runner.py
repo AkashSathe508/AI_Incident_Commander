@@ -55,11 +55,11 @@ def _make_token(app_id: str, app_cert: str, channel: str, uid: int) -> str | Non
         return None
     try:
         from agora_token_builder import RtcTokenBuilder  # type: ignore
-        return RtcTokenBuilder.build_token_with_uid(
+        privilege_expired_ts = int(time.time()) + TOKEN_EXPIRY_SECONDS
+        return RtcTokenBuilder.buildTokenWithUid(
             app_id, app_cert, channel, uid,
-            role=1,                       # Role_Publisher
-            token_expire=TOKEN_EXPIRY_SECONDS,
-            privilege_expire=0,
+            1,                          # role = Role_Publisher
+            privilege_expired_ts,       # absolute Unix timestamp
         )
     except Exception as exc:
         logger.error(f"Token generation failed: {exc}")
