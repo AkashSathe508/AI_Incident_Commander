@@ -66,5 +66,27 @@ class ConnectionManager:
             self.disconnect(conn, meeting_id)
 
 
+def broadcast_event_sync(meeting_id: str, event_type: str, item_data: dict[str, Any], evidence_data: list[dict[str, Any]] | None = None) -> None:
+    """
+    Sync helper for reasoning nodes to broadcast live intelligence items.
+    """
+    import os
+    import httpx
+
+    backend_url = os.environ.get("BACKEND_INTERNAL_URL", "http://127.0.0.1:8000")
+    url = f"{backend_url}/api/meetings/{meeting_id}/broadcast"
+    payload = {
+        "type": event_type,
+        "meeting_id": meeting_id,
+        "item": item_data,
+        "evidence": evidence_data or [],
+    }
+    try:
+        httpx.post(url, json=payload, timeout=2.0)
+    except Exception as exc:
+        logger.debug("Sync broadcast post failed (normal if running offline/test): %s", exc)
+
+
 # Global singleton instance
 ws_manager = ConnectionManager()
+

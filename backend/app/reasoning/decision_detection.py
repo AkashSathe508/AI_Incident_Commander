@@ -195,6 +195,11 @@ def _save_decisions_to_db(
                 })
 
             conn.commit()
+
+            from app.ws.manager import broadcast_event_sync
+            for cd in created_decisions:
+                broadcast_event_sync(meeting_id, "decision_created", cd, created_evidence)
+
         logger.info("[DECISION DETECTION] Saved %d decisions for meeting %s", len(created_decisions), meeting_id[:8])
     except Exception as exc:
         logger.error("Failed to save decisions to DB: %s", exc)

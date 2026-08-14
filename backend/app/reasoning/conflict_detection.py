@@ -388,6 +388,11 @@ def _save_conflicts_to_db(
                 ])
 
             conn.commit()
+
+            from app.ws.manager import broadcast_event_sync
+            for cc in created_conflicts:
+                broadcast_event_sync(meeting_id, "conflict_created", cc, created_evidence)
+
         logger.info("[CONFLICT DETECTION] Saved %d genuine conflicts for meeting %s", len(created_conflicts), meeting_id[:8])
     except Exception as exc:
         logger.error("Failed to save conflicts to DB: %s", exc)

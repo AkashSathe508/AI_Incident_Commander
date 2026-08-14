@@ -212,6 +212,12 @@ def _save_facts_to_db(
                 })
 
             conn.commit()
+
+            # Broadcast created facts to WebSocket clients
+            from app.ws.manager import broadcast_event_sync
+            for cf in created_facts:
+                broadcast_event_sync(meeting_id, "fact_created", cf, created_evidence)
+
         logger.info(
             "[FACT EXTRACTION] Extracted and saved %d facts for meeting %s",
             len(created_facts),

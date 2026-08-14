@@ -216,6 +216,11 @@ def _save_action_items_to_db(
                 })
 
             conn.commit()
+
+            from app.ws.manager import broadcast_event_sync
+            for ca in created_items:
+                broadcast_event_sync(meeting_id, "action_item_created", ca, created_evidence)
+
         logger.info("[ACTION ITEM EXTRACTION] Saved %d action items for meeting %s", len(created_items), meeting_id[:8])
     except Exception as exc:
         logger.error("Failed to save action items to DB: %s", exc)

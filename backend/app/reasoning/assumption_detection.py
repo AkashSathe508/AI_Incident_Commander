@@ -189,6 +189,11 @@ def _save_assumptions_to_db(
                 })
 
             conn.commit()
+
+            from app.ws.manager import broadcast_event_sync
+            for ca in created_assumptions:
+                broadcast_event_sync(meeting_id, "assumption_created", ca, created_evidence)
+
         logger.info("[ASSUMPTION DETECTION] Saved %d assumptions for meeting %s", len(created_assumptions), meeting_id[:8])
     except Exception as exc:
         logger.error("Failed to save assumptions to DB: %s", exc)
