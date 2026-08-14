@@ -1,10 +1,11 @@
 """
-Agora AI Agent Runner — standalone process with Deepgram Real-Time STT.
+Agora AI Agent Runner — standalone process with Deepgram STT & Spoken AI Summaries.
 
 Joins an Agora channel as a headless participant (UID in reserved range
 900_000_001–999_999_999), subscribes to all remote audio streams, streams
 per-speaker PCM audio into Deepgram Live STT, persists normalized transcript
-segments to PostgreSQL, and broadcasts live segments to WebSocket clients.
+segments to PostgreSQL, and periodically synthesizes and speaks spoken voice
+status updates into the room via ElevenLabs & Agora outgoing audio track.
 
 Usage (inside Docker container):
     python runner.py --meeting-id <uuid>
@@ -26,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from app.agent.summarizer import generate_spoken_summary
+from app.agent.tts import synthesize_speech
 from app.ingestion.transcript_ingestor import transcript_ingestor
 
 logging.basicConfig(
@@ -41,6 +44,7 @@ AGENT_UID_MAX = 999_999_999
 TOKEN_EXPIRY_SECONDS = 3600   # 1 hour token lifetime
 TOKEN_RENEWAL_AT = 3300       # renew at 55-minute mark (5 min before expiry)
 STATS_INTERVAL = 5            # log frame counts every N seconds
+DEFAULT_SPOKEN_INTERVAL = 180 # speak summary every 3 minutes
 
 
 # ── Token helper ───────────────────────────────────────────────────────────────
@@ -118,13 +122,13 @@ class DeepgramManager:
                 "live speech-to-text transcription will be disabled"
             )
 
-    async def start() -> None:
+    async def start(self) -> None:
         """Start the background audio processing worker."""
         self._httpx_client = httpx.AsyncClient(timeout=5.0)
         self._worker_task = asyncio.create_task(self._process_audio_queue())
         logger.info("Deepgram manager started for meeting %s", self.meeting_id[:8])
 
-    async def stop() -> None:
+    async def stop(self) -> None:
         """Close Deepgram connections and stop worker."""
         if self._worker_task:
             self._worker_task.cancel()
@@ -181,7 +185,6 @@ class DeepgramManager:
                         )
 
                         if payload and self._httpx_client:
-                            # Broadcast payload to backend WebSocket clients
                             backend_url = os.environ.get(
                                 "BACKEND_INTERNAL_URL", "http://127.0.0.1:8000"
                             )
@@ -225,19 +228,18 @@ class DeepgramManager:
                 logger.warning("Error streaming PCM bytes to Deepgram: %s", exc)
 
 
-# ── Audio frame observer ───────────────────────────────────────────────────────
+# ── Audio frame observer & Speech Guard ───────────────────────────────────────
 
 class FrameCounterObserver:
     """
     Implements the Agora audio frame observer interface.
-
-    on_playback_audio_frame_before_mixing is called for each decoded audio frame
-    from a remote speaker BEFORE it is mixed with other streams.
+    Tracks remote speaker frame counts and last human audio timestamp for speech guard.
     """
 
     def __init__(self, dg_manager: DeepgramManager | None = None):
         self._counts: dict[int, int] = defaultdict(int)
         self.dg_manager = dg_manager
+        self.last_human_audio_ts: float = 0.0
 
     def snapshot(self) -> dict[int, int]:
         return dict(self._counts)
@@ -258,6 +260,7 @@ class FrameCounterObserver:
         try:
             n_uid = int(uid)
             self._counts[n_uid] += 1
+            self.last_human_audio_ts = time.monotonic()
 
             if self.dg_manager and hasattr(audio_frame, "buffer"):
                 buf = audio_frame.buffer
@@ -267,6 +270,31 @@ class FrameCounterObserver:
         except Exception:
             pass
         return True
+
+
+# ── Outgoing Spoken Audio Publisher Helper ────────────────────────────────────
+
+async def play_spoken_summary_into_room(conn: Any, pcm_bytes: bytes) -> None:
+    """
+    Pushes raw 16kHz PCM audio bytes in 20ms chunks into the Agora channel for out-loud room playback.
+    640 bytes = 20ms of 16kHz 16-bit mono PCM.
+    """
+    chunk_size = 640
+    num_chunks = len(pcm_bytes) // chunk_size
+
+    push_fn = getattr(conn, "push_audio_pcm_data", None) or getattr(conn, "send_audio_pcm_data", None)
+    if push_fn is None:
+        logger.warning("Agora connection object has no push_audio_pcm_data method — skipping playback")
+        return
+
+    logger.info("[SPOKEN SUMMARY] Playing %d audio chunks into room...", num_chunks)
+    for i in range(num_chunks):
+        chunk = pcm_bytes[i * chunk_size : (i + 1) * chunk_size]
+        try:
+            push_fn(chunk)
+        except Exception as exc:
+            logger.warning("Failed to push audio PCM chunk to Agora: %s", exc)
+        await asyncio.sleep(0.02)  # 20ms chunk cadence
 
 
 # ── Main agent coroutine ───────────────────────────────────────────────────────
@@ -331,7 +359,7 @@ async def run_agent(meeting_id: str) -> None:
     agora_service.initialize(svc_cfg)
     logger.info("AgoraService initialized")
 
-    # ── Step 7: Configure and create RTC connection ────────────────────────────
+    # ── Step 7: Configure and create RTC connection with audio publish enabled ─────
     conn_cfg = RTCConnConfig(
         client_role_type=ClientRoleType.CLIENT_ROLE_BROADCASTER,
         channel_profile=ChannelProfileType.CHANNEL_PROFILE_LIVE_BROADCASTING,
@@ -339,7 +367,7 @@ async def run_agent(meeting_id: str) -> None:
     pub_cfg = RtcConnectionPublishConfig(
         audio_profile=AudioProfileType.AUDIO_PROFILE_DEFAULT,
         audio_scenario=AudioScenarioType.AUDIO_SCENARIO_AI_SERVER,
-        is_publish_audio=False,
+        is_publish_audio=True,   # Enable audio publishing for spoken summaries
         is_publish_video=False,
     )
     conn = agora_service.create_rtc_connection(conn_cfg, pub_cfg)
@@ -347,7 +375,7 @@ async def run_agent(meeting_id: str) -> None:
     # ── Step 8: Register audio frame observer ─────────────────────────────────
     observer = FrameCounterObserver(dg_manager)
     conn.register_audio_frame_observer(observer)
-    logger.info("Audio frame observer registered with Deepgram STT stream integration")
+    logger.info("Audio frame observer registered with STT & spoken audio playback")
 
     # ── Step 9: Connect ────────────────────────────────────────────────────────
     conn.connect(token, channel_name, str(agent_uid))
@@ -356,7 +384,7 @@ async def run_agent(meeting_id: str) -> None:
         f"(uid={agent_uid}, meeting={meeting_id[:8]}...)"
     )
 
-    # ── Step 10: Event loop ───────────────────────────────────────────────────
+    # ── Step 10: Event loop with Cadence & Speech Guard ───────────────────────
     stop_event = asyncio.Event()
 
     def _on_signal(*_):
@@ -370,12 +398,18 @@ async def run_agent(meeting_id: str) -> None:
             signal.signal(sig, _on_signal)
 
     last_stats = time.monotonic()
+    last_spoken_summary = time.monotonic()
+    is_agent_speaking = False
+
+    spoken_interval = int(os.environ.get("SPOKEN_SUMMARY_INTERVAL", DEFAULT_SPOKEN_INTERVAL))
+    enable_spoken = os.environ.get("ENABLE_SPOKEN_SUMMARIES", "true").lower() == "true"
 
     try:
         while not stop_event.is_set():
             await asyncio.sleep(1)
             now = time.monotonic()
 
+            # ── Periodic frame-count log ───────────────────────────────────────
             if now - last_stats >= STATS_INTERVAL:
                 snap = observer.snapshot()
                 if snap:
@@ -384,13 +418,30 @@ async def run_agent(meeting_id: str) -> None:
                         for uid, count in sorted(snap.items())
                     )
                     logger.info(f"[FRAMES meeting={meeting_id[:8]}] {parts}")
-                else:
-                    logger.info(
-                        f"[FRAMES meeting={meeting_id[:8]}] "
-                        "No remote audio yet — waiting for speakers..."
-                    )
                 last_stats = now
 
+            # ── Periodic Spoken AI Voice Summary ──────────────────────────────
+            if enable_spoken and not is_agent_speaking and (now - last_spoken_summary >= spoken_interval):
+                # Speech Guard: Ensure human participants have not spoken in the last 2 seconds
+                human_silence_duration = now - observer.last_human_audio_ts
+                if human_silence_duration >= 2.0:
+                    logger.info("[SPOKEN SUMMARY] Cadence reached & room quiet for %.1fs — generating spoken summary", human_silence_duration)
+                    is_agent_speaking = True
+                    try:
+                        summary_text = generate_spoken_summary(meeting_id)
+                        if summary_text:
+                            pcm_bytes = synthesize_speech(summary_text)
+                            if pcm_bytes:
+                                await play_spoken_summary_into_room(conn, pcm_bytes)
+                                last_spoken_summary = now
+                    except Exception as exc:
+                        logger.warning("Failed to play spoken summary: %s", exc)
+                    finally:
+                        is_agent_speaking = False
+                else:
+                    logger.info("[SPOKEN SUMMARY] Deferring spoken summary — human active within last %.1fs", human_silence_duration)
+
+            # ── Token renewal before expiry (55-minute mark) ──────────────────
             if app_cert and (now - token_ts) >= TOKEN_RENEWAL_AT:
                 logger.info("Renewing Agora token...")
                 new_token = _make_token(app_id, app_cert, channel_name, agent_uid)
@@ -415,12 +466,12 @@ async def run_agent(meeting_id: str) -> None:
             agora_service.release()
             logger.info("Agent shut down cleanly")
         except Exception as exc:
-            logger.warning(f"Shutdown error (non-fatal): {exc}")
+            logger.warning("Shutdown error (non-fatal): %s", exc)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Agora AI Agent — headless channel participant with Deepgram STT"
+        description="Agora AI Agent — headless channel participant with Deepgram STT & Spoken AI Summaries"
     )
     parser.add_argument("--meeting-id", required=True, help="Meeting UUID")
     args = parser.parse_args()
