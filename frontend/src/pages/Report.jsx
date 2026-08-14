@@ -16,10 +16,34 @@ export default function Report() {
   const [evidenceChain, setEvidenceChain] = useState(null);
   const [loadingEvidence, setLoadingEvidence] = useState(false);
 
-  // Q&A State
-  const [qaQuestion, setQaQuestion] = useState("");
-  const [qaResult, setQaResult] = useState(null);
-  const [qaLoading, setQaLoading] = useState(false);
+  // Approvals State
+  const [approvals, setApprovals] = useState([]);
+
+  useEffect(() => {
+    fetch(`${API}/meetings/${id}/approvals`)
+      .then((r) => r.json())
+      .then((data) => setApprovals(data.approvals || []))
+      .catch((err) => console.warn("Failed to fetch approvals:", err));
+  }, [id]);
+
+  async function handleApproveAction(apprId) {
+    try {
+      const res = await fetch(`${API}/meetings/${id}/approvals/${apprId}/approve`, { method: "POST" });
+      const data = await res.json();
+      setApprovals((prev) => prev.map((a) => (a.id === apprId ? { ...a, status: "approved", result: data.execution_result } : a)));
+    } catch (err) {
+      console.error("Approve action error:", err);
+    }
+  }
+
+  async function handleRejectAction(apprId) {
+    try {
+      await fetch(`${API}/meetings/${id}/approvals/${apprId}/reject`, { method: "POST" });
+      setApprovals((prev) => prev.map((a) => (a.id === apprId ? { ...a, status: "rejected" } : a)));
+    } catch (err) {
+      console.error("Reject action error:", err);
+    }
+  }
 
   async function handleAskQuestion(e) {
     e.preventDefault();
@@ -241,6 +265,44 @@ export default function Report() {
             </div>
           )}
         </section>
+
+        {/* ── External Action Approvals Ledger ───────────────────────────── */}
+        {approvals?.length > 0 && (
+          <section style={{ marginBottom: "2rem" }}>
+            <h3 style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: "1rem", color: "#eab308" }}>
+              🛡️ External Action Approvals ({approvals.length})
+            </h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+              {approvals.map((appr) => (
+                <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
+                  <div className="intel-card-header">
+                    <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
+                    <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
+                      {appr.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
+                  {appr.description && <p className="intel-card-sub">{appr.description}</p>}
+
+                  {appr.status === "pending" ? (
+                    <div className="approval-actions">
+                      <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
+                        ✓ Approve &amp; Execute
+                      </button>
+                      <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
+                        ✕ Reject
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="intel-card-sub" style={{ color: "var(--text-muted)", marginTop: "0.2rem" }}>
+                      {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* ── Decisions Section ────────────────────────────────────────────── */}
         <section style={{ marginBottom: "2rem" }}>

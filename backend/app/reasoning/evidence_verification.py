@@ -72,6 +72,23 @@ def verify_evidence_node(state: MeetingState) -> dict[str, Any]:
     except Exception as exc:
         logger.debug("Verification embedding trigger failed: %s", exc)
 
+    # Evaluate Human-in-the-Loop Action Triggers
+    try:
+        from app.reasoning.approval_engine import evaluate_action_triggers
+        next_state = {
+            "meeting_id": meeting_id,
+            "facts": verified_facts,
+            "assumptions": verified_assumptions,
+            "decisions": verified_decisions,
+            "action_items": verified_action_items,
+            "conflicts": verified_conflicts,
+            "timeline_events": verified_timeline,
+            "risks": verified_risks,
+        }
+        evaluate_action_triggers(next_state)
+    except Exception as exc:
+        logger.debug("Action trigger evaluation failed: %s", exc)
+
     logger.info(
         "[EVIDENCE VERIFICATION] Verified meeting %s — facts: %d, assumptions: %d, decisions: %d, actions: %d, conflicts: %d, timeline: %d, risks: %d",
         meeting_id[:8],

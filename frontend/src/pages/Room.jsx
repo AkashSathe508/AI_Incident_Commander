@@ -84,6 +84,39 @@ export default function Room() {
       .catch(() => setMetaError("Meeting not found or server unavailable."));
   }, [id]);
 
+  // ── Approvals State ──────────────────────────────────────────────────────
+  const [approvals, setApprovals] = useState([]);
+
+  function fetchApprovals() {
+    fetch(`${API}/meetings/${id}/approvals`)
+      .then((r) => r.json())
+      .then((data) => setApprovals(data.approvals || []))
+      .catch((err) => console.warn("Failed to fetch approvals:", err));
+  }
+
+  useEffect(() => {
+    if (phase === "live") fetchApprovals();
+  }, [id, phase]);
+
+  async function handleApproveAction(apprId) {
+    try {
+      const res = await fetch(`${API}/meetings/${id}/approvals/${apprId}/approve`, { method: "POST" });
+      const data = await res.json();
+      setApprovals((prev) => prev.map((a) => (a.id === apprId ? { ...a, status: "approved", result: data.execution_result } : a)));
+    } catch (err) {
+      console.error("Approve action error:", err);
+    }
+  }
+
+  async function handleRejectAction(apprId) {
+    try {
+      await fetch(`${API}/meetings/${id}/approvals/${apprId}/reject`, { method: "POST" });
+      setApprovals((prev) => prev.map((a) => (a.id === apprId ? { ...a, status: "rejected" } : a)));
+    } catch (err) {
+      console.error("Reject action error:", err);
+    }
+  }
+
   // ── WebSocket live transcript & intelligence stream ───────────────────────
   useEffect(() => {
     if (phase !== "live") return;
@@ -128,6 +161,10 @@ export default function Room() {
         } else if (data.type === "conflict_created" && data.item) {
           setConflicts((prev) => (prev.some((c) => c.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
+        } else if (data.type === "pending_approval_created" && data.approval) {
+          setApprovals((prev) => [data.approval, ...prev.filter((a) => a.id !== data.approval.id)]);
+        } else if (data.type === "approval_updated" && data.approval) {
+          setApprovals((prev) => prev.map((a) => (a.id === data.approval.id ? { ...a, ...data.approval } : a)));
         }
       } catch (err) {
         console.error("[WS] Error parsing websocket message:", err);
@@ -485,7 +522,52 @@ export default function Room() {
               >
                 Conflicts ({conflicts.length})
               </button>
+              <button
+                className={`intel-tab ${activeTab === "approvals" ? "intel-tab--active" : ""} ${
+                  approvals.some((a) => a.status === "pending") ? "intel-tab--has-conflicts" : ""
+                }`}
+                onClick={() => setActiveTab("approvals")}
+              >
+                Approvals ({approvals.filter((a) => a.status === "pending").length})
+              </button>
             </div>
+
+            {/* Tab 7: Approvals Column */}
+            {activeTab === "approvals" && (
+              <div className="transcript-feed">
+                {approvals.length === 0 ? (
+                  <div className="transcript-empty"><p>No pending external action approvals. Everything clear!</p></div>
+                ) : (
+                  approvals.map((appr) => (
+                    <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
+                      <div className="intel-card-header">
+                        <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
+                        <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
+                          {appr.status.toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
+                      {appr.description && <p className="intel-card-sub">{appr.description}</p>}
+
+                      {appr.status === "pending" ? (
+                        <div className="approval-actions">
+                          <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
+                            ✓ Approve &amp; Execute
+                          </button>
+                          <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="intel-card-sub" style={{ color: "var(--text-muted)", marginTop: "0.2rem" }}>
+                          {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
+                        </p>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
 
             {/* Tab 1: Live Transcript Feed */}
             {activeTab === "transcript" && (

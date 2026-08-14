@@ -15,6 +15,7 @@ from app.models.evidence import Evidence
 from app.models.embedding import Embedding
 from app.models.agent_run import AgentRun
 from app.models.graph_checkpoint import GraphCheckpoint
+from app.models.pending_approval import PendingApproval
 
 __all__ = [
     "Base",
@@ -32,4 +33,5 @@ __all__ = [
     "Embedding",
     "AgentRun",
     "GraphCheckpoint",
+    "PendingApproval",
 ]

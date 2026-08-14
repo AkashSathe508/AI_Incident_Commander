@@ -659,6 +659,167 @@ async def ask_meeting(
     }
 
 
+@router.get(
+    "/{meeting_id}/approvals",
+    summary="Get all pending and resolved external action approvals",
+)
+async def get_pending_approvals(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """
+    Returns pending and resolved action authorization requests for human review.
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    from app.models.pending_approval import PendingApproval
+    stmt = select(PendingApproval).where(PendingApproval.meeting_id == meeting_uuid).order_by(PendingApproval.created_at.desc())
+    res = await db.execute(stmt)
+    approvals = res.scalars().all()
+
+    return {
+        "meeting_id": meeting_id,
+        "approvals": [
+            {
+                "id": str(a.id),
+                "action_type": a.action_type,
+                "title": a.title,
+                "description": a.description,
+                "payload": a.payload,
+                "status": a.status,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
+            }
+            for a in approvals
+        ],
+    }
+
+
+@router.post(
+    "/{meeting_id}/approvals/{approval_id}/approve",
+    summary="Approve a pending action — resumes graph and executes integration call",
+)
+async def approve_action(meeting_id: str, approval_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """
+    Approves a proposed action, resuming execution and calling the external API (Jira/Slack/PagerDuty).
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+        appr_uuid = uuid.UUID(approval_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format")
+
+    from app.models.pending_approval import PendingApproval
+    stmt = select(PendingApproval).where(
+        PendingApproval.id == appr_uuid,
+        PendingApproval.meeting_id == meeting_uuid,
+    )
+    res = await db.execute(stmt)
+    approval = res.scalar_one_or_none()
+
+    if approval is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending approval not found")
+
+    approval.status = "approved"
+    approval.resolved_at = func.now()
+    await db.commit()
+
+    # Execute the requested external tool action
+    execution_result = {}
+    action_type = approval.action_type
+    payload = approval.payload or {}
+
+    try:
+        if action_type == "jira":
+            from app.reasoning.integrations.jira_tool import create_jira_issue
+            execution_result = create_jira_issue(
+                summary=payload.get("summary", approval.title),
+                description=payload.get("description", ""),
+                project_key=payload.get("project_key", "INC"),
+                issue_type=payload.get("issue_type", "Task"),
+            )
+        elif action_type == "slack":
+            from app.reasoning.integrations.slack_tool import post_slack_message
+            execution_result = post_slack_message(
+                message=payload.get("message", approval.title),
+                channel=payload.get("channel", "#incident-room"),
+            )
+        elif action_type == "pagerduty":
+            from app.reasoning.integrations.pagerduty_tool import trigger_pagerduty_incident
+            execution_result = trigger_pagerduty_incident(
+                summary=payload.get("summary", approval.title),
+                severity=payload.get("severity", "critical"),
+                source=payload.get("source", "AI Incident Commander"),
+            )
+    except Exception as exc:
+        logger.error("Error executing approved integration %s: %s", action_type, exc)
+        execution_result = {"status": "error", "error": str(exc)}
+
+    # Broadcast updated approval event via WebSocket
+    approval_dict = {
+        "id": str(approval.id),
+        "meeting_id": meeting_id,
+        "action_type": approval.action_type,
+        "title": approval.title,
+        "status": "approved",
+        "result": execution_result,
+    }
+    from app.reasoning.approval_engine import _broadcast_approval_event
+    _broadcast_approval_event(meeting_id, approval_dict)
+
+    return {
+        "approval_id": approval_id,
+        "status": "approved",
+        "execution_result": execution_result,
+    }
+
+
+@router.post(
+    "/{meeting_id}/approvals/{approval_id}/reject",
+    summary="Reject a pending action — cancels execution",
+)
+async def reject_action(meeting_id: str, approval_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """
+    Rejects a proposed action. The external integration call will NEVER be executed.
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+        appr_uuid = uuid.UUID(approval_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format")
+
+    from app.models.pending_approval import PendingApproval
+    stmt = select(PendingApproval).where(
+        PendingApproval.id == appr_uuid,
+        PendingApproval.meeting_id == meeting_uuid,
+    )
+    res = await db.execute(stmt)
+    approval = res.scalar_one_or_none()
+
+    if approval is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending approval not found")
+
+    approval.status = "rejected"
+    approval.resolved_at = func.now()
+    await db.commit()
+
+    # Broadcast rejected event via WebSocket
+    approval_dict = {
+        "id": str(approval.id),
+        "meeting_id": meeting_id,
+        "action_type": approval.action_type,
+        "title": approval.title,
+        "status": "rejected",
+    }
+    from app.reasoning.approval_engine import _broadcast_approval_event
+    _broadcast_approval_event(meeting_id, approval_dict)
+
+    return {
+        "approval_id": approval_id,
+        "status": "rejected",
+    }
+
+
 def _is_valid_uuid(val: str) -> bool:
     try:
         uuid.UUID(str(val))
