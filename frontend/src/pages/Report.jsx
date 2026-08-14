@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import PdfReportGenerator from "../components/PdfReportGenerator";
 
 const API = "/api";
 
@@ -16,8 +17,16 @@ export default function Report() {
   const [evidenceChain, setEvidenceChain] = useState(null);
   const [loadingEvidence, setLoadingEvidence] = useState(false);
 
+  // PDF Generation State
+  const [showReportModal, setShowReportModal] = useState(false);
+
   // Approvals State
   const [approvals, setApprovals] = useState([]);
+
+  // Q&A State
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaResult, setQaResult] = useState(null);
+  const [qaLoading, setQaLoading] = useState(false);
 
   useEffect(() => {
     fetch(`${API}/meetings/${id}/approvals`)
@@ -144,24 +153,42 @@ export default function Report() {
             <p className="room-header-sub">Status: {report.status.toUpperCase()} · AI Incident Commander</p>
           </div>
         </div>
-        <button onClick={() => navigate("/")} className="btn-ghost" style={{ width: "auto" }}>
-          ← Back to Rooms
-        </button>
+        <div style={{ display: "flex", gap: "1rem" }} className="hide-on-print">
+          <button onClick={() => setShowReportModal(true)} className="btn-primary" style={{ width: "auto", background: "var(--surface-2)", color: "var(--text)" }}>
+            Generate Report
+          </button>
+          <button onClick={() => navigate("/")} className="btn-ghost" style={{ width: "auto" }}>
+            ← Back to Rooms
+          </button>
+        </div>
       </header>
 
       {/* ── Main Content Container ───────────────────────────────────────── */}
       <div style={{ maxWidth: 1040, margin: "2rem auto", padding: "0 1.5rem", width: "100%" }}>
         {/* ── Natural-Language Q&A Search Box ────────────────────────────── */}
-        <section className="qa-box">
+        <section className="qa-box hide-on-print">
           <form onSubmit={handleAskQuestion} className="qa-form">
-            <input
-              type="text"
-              className="qa-input"
-              placeholder="Ask a natural-language question about this meeting... (e.g. what did we decide about the rollout?)"
-              value={qaQuestion}
-              onChange={(e) => setQaQuestion(e.target.value)}
-              disabled={qaLoading}
-            />
+            <div style={{ position: "relative", flex: 1, display: "flex" }}>
+              <input
+                type="text"
+                className="qa-input"
+                style={{ width: "100%", paddingRight: "2rem" }}
+                placeholder="Ask a natural-language question about this meeting... (e.g. what did we decide about the rollout?)"
+                value={qaQuestion}
+                onChange={(e) => setQaQuestion(e.target.value)}
+                disabled={qaLoading}
+              />
+              {qaQuestion && (
+                <button
+                  type="button"
+                  onClick={() => { setQaQuestion(""); setQaResult(null); }}
+                  style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "1.1rem" }}
+                  title="Clear"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
             <button type="submit" className="btn-primary" style={{ width: "auto", px: "1.25rem" }} disabled={qaLoading || !qaQuestion.trim()}>
               {qaLoading ? <span className="spinner" aria-hidden="true" /> : "Ask AI →"}
             </button>
@@ -408,6 +435,15 @@ export default function Report() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── PDF Report Modal ─────────────────────────────────────────────────── */}
+      {showReportModal && (
+        <PdfReportGenerator 
+          report={report} 
+          approvals={approvals} 
+          onClose={() => setShowReportModal(false)} 
+        />
       )}
     </div>
   );

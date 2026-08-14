@@ -631,15 +631,27 @@ export default function Room() {
                 </div>
               </div>
               <form onSubmit={handleAskQuestion} style={{ display: "flex", gap: "0.5rem" }}>
-                <input
-                  type="text"
-                  className="qa-input"
-                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.8125rem" }}
-                  placeholder="Ask AI about this call..."
-                  value={qaQuestion}
-                  onChange={(e) => setQaQuestion(e.target.value)}
-                  disabled={qaLoading}
-                />
+                <div style={{ position: "relative", flex: 1, display: "flex" }}>
+                  <input
+                    type="text"
+                    className="qa-input"
+                    style={{ width: "100%", padding: "0.45rem 2rem 0.45rem 0.75rem", fontSize: "0.8125rem" }}
+                    placeholder="Ask AI about this call..."
+                    value={qaQuestion}
+                    onChange={(e) => setQaQuestion(e.target.value)}
+                    disabled={qaLoading}
+                  />
+                  {qaQuestion && (
+                    <button
+                      type="button"
+                      onClick={() => { setQaQuestion(""); setQaResult(null); }}
+                      style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "1rem" }}
+                      title="Clear"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
                 <button type="submit" className="btn-primary" style={{ width: "auto", padding: "0.45rem 0.85rem", fontSize: "0.8125rem" }} disabled={qaLoading || !qaQuestion.trim()}>
                   {qaLoading ? <span className="spinner" aria-hidden="true" style={{ width: 14, height: 14 }} /> : "Ask"}
                 </button>
@@ -684,7 +696,7 @@ export default function Room() {
                 className={`intel-tab ${activeTab === "assumptions" ? "intel-tab--active" : ""}`}
                 onClick={() => setActiveTab("assumptions")}
               >
-                Assumptions ({assumptions.length})
+                Hypothesis ({assumptions.length})
               </button>
               <button
                 className={`intel-tab ${activeTab === "decisions" ? "intel-tab--active" : ""}`}
@@ -792,17 +804,19 @@ export default function Room() {
               </div>
             )}
 
-            {/* Tab 3: Assumptions Column */}
+            {/* Tab 3: Hypothesis Column */}
             {activeTab === "assumptions" && (
               <div className="transcript-feed">
                 {assumptions.length === 0 ? (
-                  <div className="transcript-empty"><p>No assumptions detected yet.</p></div>
+                  <div className="transcript-empty"><p>No hypotheses detected yet.</p></div>
                 ) : (
                   assumptions.map((assump) => (
-                    <div key={assump.id} className="intel-card" onClick={() => setSelectedItemForEvidence({ ...assump, itemType: "Assumption" })}>
+                    <div key={assump.id} className="intel-card" onClick={() => setSelectedItemForEvidence({ ...assump, itemType: "Hypothesis" })}>
                       <div className="intel-card-header">
-                        <span className="pill-badge">ASSUMPTION</span>
-                        <span className="pill-badge" style={{ color: "#eab308" }}>{assump.status || "pending"}</span>
+                        <span className="pill-badge">HYPOTHESIS</span>
+                        <span className="pill-badge" style={{ color: assump.status === "confirmed" ? "#22c55e" : "#eab308" }}>
+                          {assump.status === "confirmed" ? "Confirmed" : "Unconfirmed"}
+                        </span>
                       </div>
                       <p className="intel-card-text">{assump.content}</p>
                       <div className="evidence-hint">🔍 Click to inspect evidence line →</div>
