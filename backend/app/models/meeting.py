@@ -16,6 +16,10 @@ class Meeting(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unique Agora channel name — set at creation time as "room-{id}"
+    channel_name: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="active", index=True
     )
