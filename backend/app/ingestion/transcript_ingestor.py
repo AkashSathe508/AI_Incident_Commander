@@ -159,6 +159,13 @@ class TranscriptIngestor:
             "created_at": now_utc.isoformat(),
         }
 
+        # 5. Trigger LangGraph reasoning pipeline (Fact Extraction Node)
+        try:
+            from app.graph.workflow import run_fact_extraction
+            run_fact_extraction(meeting_str, payload)
+        except Exception as exc:
+            logger.warning("Error running fact extraction graph node: %s", exc)
+
         return payload
 
 
