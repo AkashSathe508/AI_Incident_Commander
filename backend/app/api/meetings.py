@@ -608,21 +608,29 @@ async def ask_meeting(
             "citations": [],
         }
 
-    # Grounded Gemini LLM call
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
     gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
     answer_text = "This topic is not covered in this meeting."
     cited_items = []
 
-    if gemini_key:
+    if groq_key or gemini_key:
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
             from langchain_core.messages import SystemMessage, HumanMessage
-
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=gemini_key,
-                temperature=0.0,
-            )
+            if groq_key:
+                from langchain_groq import ChatGroq
+                llm = ChatGroq(
+                    model_name="llama-3.3-70b-versatile",
+                    groq_api_key=groq_key,
+                    temperature=0.0,
+                )
+            else:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-3.5-flash-lite",
+                    google_api_key=gemini_key,
+                    temperature=0.0,
+                    max_retries=0,
+                )
 
             context_str = "\n".join([
                 f"[{c['source_type'].upper()} ID {c['source_id']}]: {c['text']}"
@@ -646,15 +654,12 @@ async def ask_meeting(
                 HumanMessage(content=user_prompt)
             ])
 
-            if isinstance(res.content, str):
-                clean_json = re.sub(r"```json\s*|\s*```", "", res.content).strip()
-                parsed = json.loads(clean_json)
-                answer_text = parsed.get("answer", answer_text)
-                cited_ids = parsed.get("cited_source_ids", [])
-
-                for c in top_candidates:
-                    if c["source_id"] in cited_ids or any(cid in str(c["source_id"]) for cid in cited_ids):
-                        cited_items.append(c)
+            from app.reasoning.parser import parse_llm_json
+            parsed = parse_llm_json(res.content)
+            answer_text = parsed.get("answer", answer_text)
+            for c in top_candidates:
+                if c["source_id"] in cited_ids or any(cid in str(c["source_id"]) for cid in cited_ids):
+                    cited_items.append(c)
         except Exception as exc:
             logger.warning("Gemini Q&A call failed: %s", exc)
 

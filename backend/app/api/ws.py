@@ -33,6 +33,8 @@ router = APIRouter()
 
 @router.websocket("/meetings/{meeting_id}/live")
 @router.websocket("/api/meetings/{meeting_id}/live")
+@router.websocket("/ws/meetings/{meeting_id}/live")
+@router.websocket("/ws/transcripts/{meeting_id}")
 async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> None:
     """
     WebSocket endpoint for real-time room transcript & live intelligence updates.
@@ -184,7 +186,7 @@ async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> No
                 logger.warning("Error fetching full history for WS client: %s", exc)
             break
     except Exception as exc:
-        logger.warning("DB session error in WS handler: %s", exc)
+                logger.warning("DB session error in WS handler: %s", exc)
 
     try:
         while True:
@@ -203,7 +205,26 @@ async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> No
 )
 async def broadcast_event(meeting_id: str, payload: dict[str, Any]) -> dict[str, str]:
     """
-    Called by runner/nodes to broadcast transcript segments or live intelligence events.
+    Called by browser/runner/nodes to broadcast transcript segments or live intelligence events.
+    If payload is a transcript_segment, persists it to DB and runs the LangGraph reasoning pipeline.
     """
+    if payload.get("type") == "transcript_segment" and payload.get("text"):
+        from app.ingestion.transcript_ingestor import transcript_ingestor
+
+        # Ingest, persist, create embedding, run reasoning pipeline, and broadcast
+        saved_payload = transcript_ingestor.process_and_save(
+            meeting_id=meeting_id,
+            speaker_id=str(payload.get("speaker_id") or "1"),
+            text_content=payload.get("text", ""),
+            start_ms=int(payload.get("start_ms", 0)),
+            end_ms=int(payload.get("end_ms", 0)),
+            confidence=float(payload.get("confidence", 1.0)),
+            speaker_name=payload.get("speaker_name"),
+            participant_uuid=payload.get("participant_id"),
+        )
+        if saved_payload:
+            await ws_manager.broadcast(meeting_id, saved_payload)
+        return {"status": "ok"}
+
     await ws_manager.broadcast(meeting_id, payload)
     return {"status": "ok"}

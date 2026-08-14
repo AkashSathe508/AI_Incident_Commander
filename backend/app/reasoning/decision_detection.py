@@ -47,19 +47,28 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
     if not segment_text or len(segment_text) < 4:
         return {"decisions": [], "evidence": []}
 
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
     gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
     extracted: list[ExtractedDecision] = []
 
-    if gemini_key:
+    if groq_key or gemini_key:
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
             from langchain_core.messages import SystemMessage, HumanMessage
-
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=gemini_key,
-                temperature=0.0,
-            )
+            if groq_key:
+                from langchain_groq import ChatGroq
+                llm = ChatGroq(
+                    model_name="llama-3.3-70b-versatile",
+                    groq_api_key=groq_key,
+                    temperature=0.0,
+                )
+            else:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-3.5-flash-lite",
+                    google_api_key=gemini_key,
+                    temperature=0.0,
+                    max_retries=0,
+                )
 
             system_prompt = (
                 "You are an AI Incident Commander decision detection engine. "
@@ -75,19 +84,17 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
                 HumanMessage(content=f"Speaker ({speaker_name}): \"{segment_text}\"")
             ])
 
-            content = response.content
-            if isinstance(content, str):
-                clean_json = re.sub(r"```json\s*|\s*```", "", content).strip()
-                parsed = json.loads(clean_json)
-                for item in parsed.get("decisions", []):
-                    if item.get("statement"):
-                        extracted.append(
-                            ExtractedDecision(
-                                statement=item["statement"],
-                                rationale=item.get("rationale"),
-                                owner_name=item.get("owner_name") or speaker_name,
-                            )
+            from app.reasoning.parser import parse_llm_json
+            parsed = parse_llm_json(response.content)
+            for item in parsed.get("decisions", []):
+                if item.get("statement"):
+                    extracted.append(
+                        ExtractedDecision(
+                            statement=item["statement"],
+                            rationale=item.get("rationale"),
+                            owner_name=item.get("owner_name") or speaker_name,
                         )
+                    )
         except Exception as exc:
             logger.warning("Gemini LLM decision detection failed, falling back to rule heuristic: %s", exc)
 

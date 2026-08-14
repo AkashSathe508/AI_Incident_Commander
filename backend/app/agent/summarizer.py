@@ -51,18 +51,27 @@ def generate_spoken_summary(meeting_id: str) -> str:
         if not facts and not decisions and not action_items and not conflicts:
             return ""
 
+        groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
         gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
 
-        if gemini_key:
+        if groq_key or gemini_key:
             try:
-                from langchain_google_genai import ChatGoogleGenerativeAI
                 from langchain_core.messages import SystemMessage, HumanMessage
-
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    google_api_key=gemini_key,
-                    temperature=0.2,
-                )
+                if groq_key:
+                    from langchain_groq import ChatGroq
+                    llm = ChatGroq(
+                        model_name="llama-3.3-70b-versatile",
+                        groq_api_key=groq_key,
+                        temperature=0.2,
+                    )
+                else:
+                    from langchain_google_genai import ChatGoogleGenerativeAI
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemini-3.5-flash-lite",
+                        google_api_key=gemini_key,
+                        temperature=0.2,
+                        max_retries=0,
+                    )
 
                 prompt = (
                     f"Current Incident State:\n"
@@ -80,8 +89,11 @@ def generate_spoken_summary(meeting_id: str) -> str:
                     HumanMessage(content=prompt)
                 ])
 
-                if isinstance(res.content, str):
-                    summary_text = res.content.strip()
+                content = res.content
+                if isinstance(content, list):
+                    content = "".join([b.get("text", "") if isinstance(b, dict) else str(b) for b in content])
+                if isinstance(content, str):
+                    summary_text = content.strip()
                     logger.info("[SUMMARIZER] Generated spoken summary: '%s'", summary_text)
                     return summary_text
             except Exception as exc:

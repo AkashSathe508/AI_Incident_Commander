@@ -155,16 +155,27 @@ def _classify_pair(
                 description=f"Information update by {speaker_a}: {text_b}",
             )
 
-    if gemini_key:
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            from langchain_core.messages import SystemMessage, HumanMessage
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
+    gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
 
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=gemini_key,
-                temperature=0.0,
-            )
+    if groq_key or gemini_key:
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage
+            if groq_key:
+                from langchain_groq import ChatGroq
+                llm = ChatGroq(
+                    model_name="llama-3.3-70b-versatile",
+                    groq_api_key=groq_key,
+                    temperature=0.0,
+                )
+            else:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-3.5-flash-lite",
+                    google_api_key=gemini_key,
+                    temperature=0.0,
+                    max_retries=0,
+                )
 
             prompt = (
                 f"Claim A (by {speaker_a}): \"{text_a}\"\n"
@@ -186,15 +197,13 @@ def _classify_pair(
                 HumanMessage(content=prompt)
             ])
 
-            content = res.content
-            if isinstance(content, str):
-                clean_json = re.sub(r"```json\s*|\s*```", "", content).strip()
-                data = json.loads(clean_json)
-                cat = data.get("category", "clarification")
-                is_conf = data.get("is_genuine_conflict", False)
-                # Extra safety rule for same speaker update
-                if cat == "updated_information" or speaker_a == speaker_b:
-                    is_conf = False
+            from app.reasoning.parser import parse_llm_json
+            data = parse_llm_json(res.content)
+            cat = data.get("category", "clarification")
+            is_conf = data.get("is_genuine_conflict", False)
+            # Extra safety rule for same speaker update
+            if cat == "updated_information" or speaker_a == speaker_b:
+                is_conf = False
                 return ConflictPairClassification(
                     category=cat,
                     is_genuine_conflict=is_conf,

@@ -51,19 +51,28 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
     if not segment_text or len(segment_text) < 4:
         return {"facts": [], "evidence": []}
 
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
     gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
     extracted_facts: list[ExtractedFact] = []
 
-    if gemini_key:
+    if groq_key or gemini_key:
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
             from langchain_core.messages import SystemMessage, HumanMessage
-
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=gemini_key,
-                temperature=0.0,
-            )
+            if groq_key:
+                from langchain_groq import ChatGroq
+                llm = ChatGroq(
+                    model_name="llama-3.3-70b-versatile",
+                    groq_api_key=groq_key,
+                    temperature=0.0,
+                )
+            else:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-3.5-flash-lite",
+                    google_api_key=gemini_key,
+                    temperature=0.0,
+                    max_retries=0,
+                )
 
             system_prompt = (
                 "You are an AI Incident Commander fact extraction engine. "
@@ -83,19 +92,16 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
                 HumanMessage(content=user_prompt)
             ])
 
-            content = response.content
-            if isinstance(content, str):
-                # Clean code blocks if present
-                clean_json = re.sub(r"```json\s*|\s*```", "", content).strip()
-                parsed = json.loads(clean_json)
-                for item in parsed.get("facts", []):
-                    if item.get("statement"):
-                        extracted_facts.append(
-                            ExtractedFact(
-                                statement=item["statement"],
-                                confidence=float(item.get("confidence", 0.9)),
-                            )
+            from app.reasoning.parser import parse_llm_json
+            parsed = parse_llm_json(response.content)
+            for item in parsed.get("facts", []):
+                if item.get("statement"):
+                    extracted_facts.append(
+                        ExtractedFact(
+                            statement=item["statement"],
+                            confidence=float(item.get("confidence", 0.95)),
                         )
+                    )
         except Exception as exc:
             logger.warning("Gemini LLM fact extraction failed, falling back to rule heuristic: %s", exc)
 

@@ -38,9 +38,9 @@ def generate_embedding(text_content: str) -> list[float]:
         logger.debug("GEMINI_API_KEY not set — returning zero-vector placeholder")
         return [0.0] * TARGET_DIM
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={gemini_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={gemini_key}"
     payload = {
-        "model": "models/text-embedding-004",
+        "model": "models/gemini-embedding-001",
         "content": {"parts": [{"text": text_content.strip()}]},
     }
 

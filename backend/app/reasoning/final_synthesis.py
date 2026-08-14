@@ -86,20 +86,29 @@ def generate_final_synthesis(meeting_id: str) -> dict[str, Any]:
             }
 
             # Synthesize via Gemini LLM
+            groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
             gemini_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
             executive_summary = f"Incident Response Call for '{m_row[1]}'. Total transcripts processed: {len(transcripts)}. Facts: {len(facts)}, Decisions: {len(decisions)}, Action Items: {len(action_items)}, Conflicts: {len(conflicts)}."
             unresolved_questions = []
 
-            if gemini_key:
+            if groq_key or gemini_key:
                 try:
-                    from langchain_google_genai import ChatGoogleGenerativeAI
                     from langchain_core.messages import SystemMessage, HumanMessage
-
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemini-1.5-flash",
-                        google_api_key=gemini_key,
-                        temperature=0.2,
-                    )
+                    if groq_key:
+                        from langchain_groq import ChatGroq
+                        llm = ChatGroq(
+                            model_name="llama-3.3-70b-versatile",
+                            groq_api_key=groq_key,
+                            temperature=0.2,
+                        )
+                    else:
+                        from langchain_google_genai import ChatGoogleGenerativeAI
+                        llm = ChatGoogleGenerativeAI(
+                            model="gemini-3.5-flash-lite",
+                            google_api_key=gemini_key,
+                            temperature=0.2,
+                            max_retries=0,
+                        )
 
                     prompt = (
                         f"Incident Title: {m_row[1]}\n"
@@ -115,10 +124,10 @@ def generate_final_synthesis(meeting_id: str) -> dict[str, Any]:
                         HumanMessage(content=prompt)
                     ])
 
-                    if isinstance(res.content, str):
-                        clean_json = re.sub(r"```json\s*|\s*```", "", res.content).strip()
-                        parsed = json.loads(clean_json)
-                        executive_summary = parsed.get("executive_summary", executive_summary)
+                    from app.reasoning.parser import parse_llm_json
+                    parsed = parse_llm_json(res.content)
+                    executive_summary = parsed.get("executive_summary", executive_summary)
+                    unresolved_questions = parsed.get("unresolved_questions", [])
                         unresolved_questions = parsed.get("unresolved_questions", [])
                 except Exception as exc:
                     logger.warning("Gemini final synthesis LLM call failed: %s", exc)

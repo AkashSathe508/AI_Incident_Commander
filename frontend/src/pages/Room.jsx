@@ -67,11 +67,75 @@ export default function Room() {
   // ── Mic state ────────────────────────────────────────────────────────────
   const [micMuted, setMicMuted] = useState(false);
 
-  // ── Agora refs ───────────────────────────────────────────────────────────
+  // ── Agora & Speech refs ───────────────────────────────────────────────────
   const clientRef = useRef(null);
   const micTrackRef = useRef(null);
   const localUidRef = useRef(null);
   const transcriptFeedRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  function startSpeechRecognition(meetingId, userUid, userName, participantUuid) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.log("Browser SpeechRecognition API not supported.");
+      return;
+    }
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+      }
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const res = event.results[i];
+          if (res.isFinal) {
+            const text = res[0].transcript.trim();
+            if (text) {
+              const now = Date.now();
+              const payload = {
+                type: "transcript_segment",
+                id: crypto.randomUUID(),
+                meeting_id: meetingId,
+                speaker_id: String(userUid),
+                speaker_name: userName,
+                participant_id: participantUuid,
+                text: text,
+                start_ms: now - 3000,
+                end_ms: now,
+                confidence: res[0].confidence || 0.95,
+              };
+
+              fetch(`${API}/meetings/${meetingId}/broadcast`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              }).catch((err) => console.warn("Failed to broadcast transcript segment:", err));
+            }
+          }
+        }
+      };
+
+      recognition.onerror = (err) => {
+        if (err.error !== "no-speech") console.warn("SpeechRecognition error:", err.error);
+      };
+
+      recognition.onend = () => {
+        if (recognitionRef.current === recognition) {
+          try { recognition.start(); } catch (_) {}
+        }
+      };
+
+      recognition.start();
+      console.log("[SpeechRecognition] Started browser live microphone transcription.");
+    } catch (err) {
+      console.warn("Failed to initialize browser speech recognition:", err);
+    }
+  }
 
   // ── Load meeting metadata ─────────────────────────────────────────────────
   useEffect(() => {
@@ -122,7 +186,8 @@ export default function Room() {
     if (phase !== "live") return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/meetings/${id}/live`;
+    const host = window.location.port === "5173" ? `${window.location.hostname}:8000` : window.location.host;
+    const wsUrl = `${protocol}//${host}/meetings/${id}/live`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -188,7 +253,7 @@ export default function Room() {
   useEffect(() => {
     return () => {
       micTrackRef.current?.close();
-      clientRef.current?.leave().catch(() => {});
+      clientRef.current?.leave().catch(() => { });
     };
   }, []);
 
@@ -209,56 +274,69 @@ export default function Room() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail ?? `Server error ${res.status}`);
       }
-      const { token, channel_name, uid, app_id } = await res.json();
-
-      const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-      clientRef.current = client;
+      const { token, channel_name, uid, app_id, participant_id } = await res.json();
       localUidRef.current = uid;
 
-      client.on("user-published", async (user, mediaType) => {
-        await client.subscribe(user, mediaType);
-        if (mediaType === "audio") user.audioTrack.play();
-        setParticipants((prev) =>
-          prev.find((p) => p.uid === user.uid)
-            ? prev
-            : [...prev, { uid: user.uid, name: `Guest-${String(user.uid).slice(-4)}`, isSelf: false }]
-        );
-      });
+      if (app_id && app_id.trim()) {
+        try {
+          const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+          clientRef.current = client;
 
-      client.on("user-unpublished", (user, mediaType) => {
-        if (mediaType === "audio") user.audioTrack?.stop();
-      });
+          client.on("user-published", async (user, mediaType) => {
+            await client.subscribe(user, mediaType);
+            if (mediaType === "audio") user.audioTrack.play();
+            setParticipants((prev) =>
+              prev.find((p) => p.uid === user.uid)
+                ? prev
+                : [...prev, { uid: user.uid, name: `Guest-${String(user.uid).slice(-4)}`, isSelf: false }]
+            );
+          });
 
-      client.on("user-left", (user) => {
-        setParticipants((prev) => prev.filter((p) => p.uid !== user.uid));
-        setSpeakingUids((prev) => {
-          const next = new Set(prev);
-          next.delete(user.uid);
-          return next;
-        });
-      });
+          client.on("user-unpublished", (user, mediaType) => {
+            if (mediaType === "audio") user.audioTrack?.stop();
+          });
 
-      client.enableAudioVolumeIndicator();
-      client.on("volume-indicator", (volumes) => {
-        const active = new Set(volumes.filter((v) => v.level > 8).map((v) => v.uid));
-        setSpeakingUids(active);
-      });
+          client.on("user-left", (user) => {
+            setParticipants((prev) => prev.filter((p) => p.uid !== user.uid));
+            setSpeakingUids((prev) => {
+              const next = new Set(prev);
+              next.delete(user.uid);
+              return next;
+            });
+          });
 
-      await client.join(app_id, channel_name, token ?? null, uid);
+          client.enableAudioVolumeIndicator();
+          client.on("volume-indicator", (volumes) => {
+            const active = new Set(volumes.filter((v) => v.level > 8).map((v) => v.uid));
+            setSpeakingUids(active);
+          });
 
-      const micTrack = await AgoraRTC.createMicrophoneAudioTrack();
-      micTrackRef.current = micTrack;
-      await client.publish([micTrack]);
+          await client.join(app_id, channel_name, token ?? null, uid);
 
-      setParticipants([{ uid, name: displayName.trim(), isSelf: true }]);
+          try {
+            const micTrack = await AgoraRTC.createMicrophoneAudioTrack();
+            micTrackRef.current = micTrack;
+            await client.publish([micTrack]);
+          } catch (micErr) {
+            console.warn("Microphone creation failed or blocked:", micErr);
+          }
+        } catch (agoraErr) {
+          console.warn("Agora RTC connection bypassed or invalid appid:", agoraErr.message || agoraErr);
+        }
+      } else {
+        console.log("No AGORA_APP_ID configured — running in Browser Speech / Direct Audio mode.");
+      }
+
+      setParticipants([{ uid: uid || 1, name: displayName.trim(), isSelf: true }]);
       setPhase("live");
+      startSpeechRecognition(id, uid || 1, displayName.trim(), participant_id);
     } catch (err) {
       console.error("Join error:", err);
       setJoinError(err.message || "Failed to join. Check console for details.");
       setPhase("prompt");
       micTrackRef.current?.close();
       micTrackRef.current = null;
-      await clientRef.current?.leave().catch(() => {});
+      await clientRef.current?.leave().catch(() => { });
       clientRef.current = null;
     }
   }
@@ -270,6 +348,9 @@ export default function Room() {
     } catch (err) {
       console.warn("End meeting error:", err);
     }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (_) {}
+    }
     micTrackRef.current?.close();
     micTrackRef.current = null;
     await clientRef.current?.leave().catch(() => {});
@@ -279,6 +360,9 @@ export default function Room() {
 
   // ── Leave room ────────────────────────────────────────────────────────────
   async function leaveRoom() {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (_) {}
+    }
     micTrackRef.current?.close();
     micTrackRef.current = null;
     await clientRef.current?.leave().catch(() => {});
@@ -515,17 +599,15 @@ export default function Room() {
                 Actions ({actionItems.length})
               </button>
               <button
-                className={`intel-tab ${activeTab === "conflicts" ? "intel-tab--active" : ""} ${
-                  conflicts.length > 0 ? "intel-tab--has-conflicts" : ""
-                }`}
+                className={`intel-tab ${activeTab === "conflicts" ? "intel-tab--active" : ""} ${conflicts.length > 0 ? "intel-tab--has-conflicts" : ""
+                  }`}
                 onClick={() => setActiveTab("conflicts")}
               >
                 Conflicts ({conflicts.length})
               </button>
               <button
-                className={`intel-tab ${activeTab === "approvals" ? "intel-tab--active" : ""} ${
-                  approvals.some((a) => a.status === "pending") ? "intel-tab--has-conflicts" : ""
-                }`}
+                className={`intel-tab ${activeTab === "approvals" ? "intel-tab--active" : ""} ${approvals.some((a) => a.status === "pending") ? "intel-tab--has-conflicts" : ""
+                  }`}
                 onClick={() => setActiveTab("approvals")}
               >
                 Approvals ({approvals.filter((a) => a.status === "pending").length})
