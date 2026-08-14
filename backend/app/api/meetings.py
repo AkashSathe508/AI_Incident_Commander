@@ -18,6 +18,7 @@ UID ranges:
 
 import asyncio
 import logging
+import os
 import random
 import uuid
 
@@ -657,6 +658,7 @@ async def ask_meeting(
             from app.reasoning.parser import parse_llm_json
             parsed = parse_llm_json(res.content)
             answer_text = parsed.get("answer", answer_text)
+            cited_ids = [str(cid) for cid in parsed.get("cited_source_ids", [])]
             for c in top_candidates:
                 if c["source_id"] in cited_ids or any(cid in str(c["source_id"]) for cid in cited_ids):
                     cited_items.append(c)

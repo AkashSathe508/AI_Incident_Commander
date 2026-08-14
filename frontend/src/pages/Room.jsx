@@ -64,8 +64,75 @@ export default function Room() {
     }
   }
 
+  // ── CSV Upload State ───────────────────────────────────────────────────────
+  const fileInputRef = useRef(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target.result;
+        // Simple CSV parser: assumes "Speaker,Text" format (e.g. "Alice,The server is down")
+        const lines = text.split('\n').filter(line => line.trim());
+        let currentMs = Date.now();
+        
+        for (const line of lines) {
+          // simple split by first comma
+          const commaIdx = line.indexOf(',');
+          let speaker = "System";
+          let content = line;
+          
+          if (commaIdx > -1) {
+            speaker = line.substring(0, commaIdx).trim();
+            content = line.substring(commaIdx + 1).trim().replace(/^"(.*)"$/, '$1'); // remove quotes if any
+          }
+
+          const payload = {
+            type: "transcript_segment",
+            id: crypto.randomUUID(),
+            meeting_id: id,
+            speaker_id: speaker,
+            speaker_name: speaker,
+            participant_id: "csv-upload",
+            text: content,
+            start_ms: currentMs,
+            end_ms: currentMs + 2000,
+            confidence: 1.0,
+          };
+          
+          await fetch(`${API}/meetings/${id}/broadcast`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          
+          // wait 3 seconds between each to allow LLM processing to catch up
+          await new Promise(res => setTimeout(res, 3000));
+          currentMs += 3000;
+        }
+      } catch (err) {
+        console.error("CSV Upload Error:", err);
+      } finally {
+        setIsUploading(false);
+      }
+    };
+    reader.readAsText(file);
+    // Reset file input
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   // ── Mic state ────────────────────────────────────────────────────────────
   const [micMuted, setMicMuted] = useState(false);
+  const micMutedRef = useRef(micMuted);
+
+  useEffect(() => {
+    micMutedRef.current = micMuted;
+  }, [micMuted]);
 
   // ── Agora & Speech refs ───────────────────────────────────────────────────
   const clientRef = useRef(null);
@@ -91,6 +158,7 @@ export default function Room() {
       recognition.lang = "en-US";
 
       recognition.onresult = (event) => {
+        if (micMutedRef.current) return;
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const res = event.results[i];
           if (res.isFinal) {
@@ -125,7 +193,7 @@ export default function Room() {
       };
 
       recognition.onend = () => {
-        if (recognitionRef.current === recognition) {
+        if (recognitionRef.current === recognition && !micMutedRef.current) {
           try { recognition.start(); } catch (_) {}
         }
       };
@@ -372,9 +440,21 @@ export default function Room() {
 
   // ── Toggle mic ────────────────────────────────────────────────────────────
   async function toggleMic() {
-    if (!micTrackRef.current) return;
     const next = !micMuted;
-    await micTrackRef.current.setMuted(next);
+    if (micTrackRef.current) {
+      await micTrackRef.current.setMuted(next);
+    }
+    
+    if (recognitionRef.current) {
+      if (next) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+        console.log("[SpeechRecognition] Paused browser microphone transcription (Muted).");
+      } else {
+        try { recognitionRef.current.start(); } catch (_) {}
+        console.log("[SpeechRecognition] Resumed browser microphone transcription (Unmuted).");
+      }
+    }
+    
     setMicMuted(next);
   }
 
@@ -530,6 +610,26 @@ export default function Room() {
 
             {/* Q&A Ask Box */}
             <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Manual Transcript</span>
+                <div>
+                  <input 
+                    type="file" 
+                    accept=".csv" 
+                    style={{ display: "none" }} 
+                    ref={fileInputRef} 
+                    onChange={handleFileUpload} 
+                  />
+                  <button 
+                    className="btn-primary" 
+                    style={{ padding: "0.2rem 0.5rem", fontSize: "0.7rem", background: "#4f46e5" }}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                  >
+                    {isUploading ? "Uploading..." : "Upload CSV"}
+                  </button>
+                </div>
+              </div>
               <form onSubmit={handleAskQuestion} style={{ display: "flex", gap: "0.5rem" }}>
                 <input
                   type="text"

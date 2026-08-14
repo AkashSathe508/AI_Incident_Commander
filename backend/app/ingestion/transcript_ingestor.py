@@ -68,7 +68,8 @@ class TranscriptIngestor:
         now_utc = datetime.now(timezone.utc)
 
         # Prepare DB insert
-        raw_url = os.environ.get("DATABASE_URL", "")
+        from app.config.settings import settings
+        raw_url = settings.database_url or os.environ.get("DATABASE_URL", "")
         if not raw_url:
             logger.warning("DATABASE_URL not set — transcript segment will not be persisted")
             return {

@@ -21,6 +21,8 @@ import os
 import sys
 from pathlib import Path
 
+from app.config.settings import settings
+
 logger = logging.getLogger(__name__)
 
 # Absolute path to runner.py — resolved at import time
@@ -66,6 +68,21 @@ class AgentManager:
         self._procs.pop(meeting_id, None)
 
         logger.info("Launching agent subprocess for meeting %s...", meeting_id[:8])
+        env = os.environ.copy()
+        env.update(
+            {
+                "AGORA_APP_ID": settings.agora_app_id,
+                "AGORA_APP_CERTIFICATE": settings.agora_app_certificate,
+                "DEEPGRAM_API_KEY": settings.deepgram_api_key,
+                "ELEVENLABS_API_KEY": settings.elevenlabs_api_key,
+                "GEMINI_API_KEY": settings.gemini_api_key,
+                "GROQ_API_KEY": settings.groq_api_key,
+                "DATABASE_URL": settings.database_url,
+                "REDIS_URL": settings.redis_url,
+                "ENABLE_SPOKEN_SUMMARIES": str(settings.enable_spoken_summaries).lower(),
+                "SPOKEN_SUMMARY_INTERVAL": str(settings.spoken_summary_interval),
+            }
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -73,7 +90,7 @@ class AgentManager:
                 "--meeting-id", meeting_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=os.environ.copy(),
+                env=env,
             )
         except Exception as exc:
             logger.error("Failed to spawn agent for %s: %s", meeting_id[:8], exc)
