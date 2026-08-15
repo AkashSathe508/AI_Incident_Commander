@@ -41,6 +41,12 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
     meeting_id = state.get("meeting_id")
     latest_segment = state.get("latest_segment")
 
+    logger.info(
+        "[FACT EXTRACTION] Node entered — meeting=%s segment_text='%s'",
+        (meeting_id or "")[:8],
+        (latest_segment or {}).get("text", "")[:60],
+    )
+
     if not meeting_id or not latest_segment:
         return {"facts": [], "evidence": []}
 

@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from app.graph.state import MeetingState
 from app.reasoning.action_item_extraction import extract_action_items_node
@@ -46,13 +46,15 @@ builder.add_node("timeline_agent", timeline_agent_node)
 builder.add_node("risk_detection", detect_risks_node)
 builder.add_node("evidence_verification", verify_evidence_node)
 
-# Wire entry points for parallel extraction
-builder.set_entry_point("fact_extraction")
-builder.set_entry_point("assumption_detection")
-builder.set_entry_point("decision_detection")
-builder.set_entry_point("action_item_extraction")
+# Wire parallel fan-out from START → all 4 extraction nodes simultaneously.
+# IMPORTANT: set_entry_point() is NOT additive — each call overwrites the previous.
+# Use add_edge(START, ...) for true parallel entry into multiple nodes.
+builder.add_edge(START, "fact_extraction")
+builder.add_edge(START, "assumption_detection")
+builder.add_edge(START, "decision_detection")
+builder.add_edge(START, "action_item_extraction")
 
-# Connect extraction nodes to conflict detection
+# Connect all 4 extraction nodes → conflict detection (fan-in after all 4 complete)
 builder.add_edge("fact_extraction", "conflict_detection")
 builder.add_edge("assumption_detection", "conflict_detection")
 builder.add_edge("decision_detection", "conflict_detection")

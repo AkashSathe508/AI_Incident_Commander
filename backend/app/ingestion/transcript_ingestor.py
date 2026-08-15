@@ -8,6 +8,7 @@ the segment to all connected WebSocket clients in real-time.
 
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -167,12 +168,18 @@ class TranscriptIngestor:
             "created_at": now_utc.isoformat(),
         }
 
-        # 5. Trigger LangGraph full reasoning pipeline (Facts, Assumptions, Decisions, Actions, Conflicts, Timeline, Risks, Verification)
-        try:
-            from app.graph.workflow import run_reasoning_pipeline
-            run_reasoning_pipeline(meeting_str, payload)
-        except Exception as exc:
-            logger.warning("Error running reasoning graph pipeline: %s", exc)
+        # 5. Trigger LangGraph full reasoning pipeline in a background thread so the
+        #    HTTP response is returned immediately — eliminating STT lag caused by
+        #    blocking on multiple sequential Groq LLM calls before ack-ing the segment.
+        def _run_pipeline() -> None:
+            try:
+                from app.graph.workflow import run_reasoning_pipeline
+                run_reasoning_pipeline(meeting_str, payload)
+            except Exception as exc:
+                logger.warning("Error running reasoning graph pipeline: %s", exc)
+
+        t = threading.Thread(target=_run_pipeline, daemon=True, name=f"graph-{meeting_str[:8]}")
+        t.start()
 
         return payload
 

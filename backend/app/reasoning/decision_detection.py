@@ -37,6 +37,12 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
     meeting_id = state.get("meeting_id")
     latest_segment = state.get("latest_segment")
 
+    logger.info(
+        "[DECISION DETECTION] Node entered — meeting=%s segment_text='%s'",
+        (meeting_id or "")[:8],
+        (latest_segment or {}).get("text", "")[:60],
+    )
+
     if not meeting_id or not latest_segment:
         return {"decisions": [], "evidence": []}
 
@@ -74,8 +80,14 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
                 "You are an AI Incident Commander decision detection engine. "
                 "Analyze the spoken utterance from an incident call and extract "
                 "DECISIONS MADE, PROPOSED, OR AGREED UPON.\n\n"
-                "Examples: 'We agreed to rollback to v2.4', 'Let's restart the Redis cluster', "
-                "'Decision: scale out the pod replicas to 10'.\n"
+                "Examples:\n"
+                "- 'We agreed to rollback to v2.4' → decision\n"
+                "- 'Let’s restart the Redis cluster' → decision\n"
+                "- 'Decision: scale out the pod replicas to 10' → decision\n"
+                "- 'I’m going to fix the deadlock in the database' → decision (implied action decision)\n"
+                "- 'We should switch to the backup service' → decision\n"
+                "- 'Going with option A' → decision\n"
+                "Be INCLUSIVE: extract both formal decisions and implied choices/commitments.\n"
                 "Return response JSON: {\"decisions\": [{\"statement\": \"...\", \"rationale\": \"...\", \"owner_name\": \"...\"}]}"
             )
 
@@ -83,6 +95,8 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Speaker ({speaker_name}): \"{segment_text}\"")
             ])
+
+            logger.info("[DECISION DETECTION] Raw LLM response: %s", str(response.content)[:300])
 
             from app.reasoning.parser import parse_llm_json
             parsed = parse_llm_json(response.content)
@@ -122,7 +136,12 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
 
 
 def _is_likely_decision(text_content: str) -> bool:
-    keywords = ["agreed", "decided", "let's rollback", "let's restart", "we will deploy", "going with option", "decision:"]
+    keywords = [
+        "agreed", "decided", "let's rollback", "let's restart", "we will deploy",
+        "going with option", "decision:", "i'm going to", "we should", "going to",
+        "let's go with", "we'll", "switching to", "rolling back", "restarting",
+        "approve", "reject", "confirmed", "finalized",
+    ]
     lowered = text_content.lower()
     return any(kw in lowered for kw in keywords)
 

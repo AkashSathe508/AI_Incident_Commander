@@ -41,6 +41,12 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
     meeting_id = state.get("meeting_id")
     latest_segment = state.get("latest_segment")
 
+    logger.info(
+        "[ACTION ITEM EXTRACTION] Node entered — meeting=%s segment_text='%s'",
+        (meeting_id or "")[:8],
+        (latest_segment or {}).get("text", "")[:60],
+    )
+
     if not meeting_id or not latest_segment:
         return {"action_items": [], "evidence": []}
 
@@ -77,8 +83,15 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
             system_prompt = (
                 "You are an AI Incident Commander action item extraction engine. "
                 "Analyze the spoken utterance from an incident call and extract "
-                "ACTION ITEMS, TASKS, OR ASSIGNED FOLLOW-UPS.\n\n"
-                "Examples: 'Alex will check the database logs by 5 PM', 'I will update the status page in 10 minutes'.\n"
+                "ACTION ITEMS, TASKS, ASSIGNED FOLLOW-UPS, OR IMPLIED WORK ITEMS.\n\n"
+                "Examples: \n"
+                "- 'Alex will check the database logs by 5 PM' → action item\n"
+                "- 'I will update the status page in 10 minutes' → action item\n"
+                "- 'I found the deadlock issue in the database' → action item (needs investigation/fix)\n"
+                "- 'Someone needs to restart the Redis cluster' → action item\n"
+                "- 'We need to rollback the deploy' → action item\n"
+                "- 'Can you look into the latency spike?' → action item\n"
+                "Be INCLUSIVE: extract tasks that are assigned, implied, requested, or identified as needing attention.\n"
                 "Return response JSON: {\"action_items\": [{\"description\": \"...\", \"assignee_name\": \"...\", \"raw_due_date\": \"...\", \"priority\": \"medium\", \"status\": \"open\"}]}"
             )
 
@@ -86,6 +99,8 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Speaker ({speaker_name}): \"{segment_text}\"")
             ])
+
+            logger.info("[ACTION ITEM EXTRACTION] Raw LLM response: %s", str(response.content)[:300])
 
             from app.reasoning.parser import parse_llm_json
             parsed = parse_llm_json(response.content)
@@ -135,7 +150,12 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
 
 
 def _is_likely_action_item(text_content: str) -> bool:
-    keywords = ["will check", "i'll look into", "action item:", "take a look", "fix this by", "handle this", "assigned to"]
+    keywords = [
+        "will check", "i'll look into", "action item:", "take a look", "fix this by",
+        "handle this", "assigned to", "i found", "we need to", "someone needs",
+        "needs to be", "can you", "please", "let me", "going to", "should",
+        "follow up", "investigate", "looking into", "work on",
+    ]
     lowered = text_content.lower()
     return any(kw in lowered for kw in keywords)
 

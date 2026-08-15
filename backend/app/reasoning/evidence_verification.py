@@ -29,6 +29,20 @@ def verify_evidence_node(state: MeetingState) -> dict[str, Any]:
     if not meeting_id:
         return {}
 
+    logger.info(
+        "[EVIDENCE VERIFICATION] Node entered — meeting=%s "
+        "facts_in=%d assumptions_in=%d decisions_in=%d actions_in=%d "
+        "conflicts_in=%d timeline_in=%d risks_in=%d",
+        meeting_id[:8],
+        len(state.get("facts", [])),
+        len(state.get("assumptions", [])),
+        len(state.get("decisions", [])),
+        len(state.get("action_items", [])),
+        len(state.get("conflicts", [])),
+        len(state.get("timeline_events", [])),
+        len(state.get("risks", [])),
+    )
+
     valid_segment_ids = _load_valid_segment_ids(meeting_id)
 
     verified_facts = [
