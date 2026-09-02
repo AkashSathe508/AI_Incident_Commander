@@ -27,6 +27,7 @@ class ExtractedDecision(BaseModel):
     statement: str = Field(description="Decision statement or agreement made")
     rationale: str | None = Field(default=None, description="Rationale or reason for decision")
     owner_name: str | None = Field(default=None, description="Name or role of person making decision")
+    decision_type: str = Field(default="technical", description="One of: rollback | escalation | delegation | technical | process | other")
 
 
 def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
@@ -70,7 +71,7 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-2.0-flash",
                     google_api_key=gemini_key,
                     temperature=0.0,
                     max_retries=0,
@@ -79,16 +80,24 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
             system_prompt = (
                 "You are an AI Incident Commander decision detection engine. "
                 "Analyze the spoken utterance from an incident call and extract "
-                "DECISIONS MADE, PROPOSED, OR AGREED UPON.\n\n"
-                "Examples:\n"
-                "- 'We agreed to rollback to v2.4' → decision\n"
-                "- 'Let’s restart the Redis cluster' → decision\n"
-                "- 'Decision: scale out the pod replicas to 10' → decision\n"
-                "- 'I’m going to fix the deadlock in the database' → decision (implied action decision)\n"
-                "- 'We should switch to the backup service' → decision\n"
-                "- 'Going with option A' → decision\n"
-                "Be INCLUSIVE: extract both formal decisions and implied choices/commitments.\n"
-                "Return response JSON: {\"decisions\": [{\"statement\": \"...\", \"rationale\": \"...\", \"owner_name\": \"...\"}]}"
+                "DECISIONS MADE, PROPOSED, AGREED UPON, OR COMMITTED TO.\n\n"
+                "Be INCLUSIVE — extract both formal decisions and implied commitments.\n"
+                "EXAMPLES:\n"
+                "- 'We agreed to rollback to v2.4' → rollback decision\n"
+                "- 'Let\'s restart the Redis cluster' → technical decision\n"
+                "- 'I\'m escalating this to the VP of Engineering' → escalation decision\n"
+                "- 'John will handle the database fix' → delegation decision\n"
+                "- 'Going with option A' → technical decision\n"
+                "- 'We\'ll switch to the backup service' → process decision\n\n"
+                "DECISION TYPES:\n"
+                "- rollback: revert a deployment or change\n"
+                "- escalation: bring in higher authority or on-call\n"
+                "- delegation: assign work to a specific person\n"
+                "- technical: technical action or configuration change\n"
+                "- process: workflow or communication change\n"
+                "- other: any other clear decision\n\n"
+                "Return JSON: {\"decisions\": [{\"statement\": \"...\", \"rationale\": \"...\", \"owner_name\": \"...\", \"decision_type\": \"technical\"}]}\n"
+                "If NO decisions found, return: {\"decisions\": []}"
             )
 
             response = llm.invoke([
@@ -107,6 +116,7 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
                             statement=item["statement"],
                             rationale=item.get("rationale"),
                             owner_name=item.get("owner_name") or speaker_name,
+                            decision_type=item.get("decision_type", "technical"),
                         )
                     )
         except Exception as exc:

@@ -75,7 +75,7 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-2.0-flash",
                     google_api_key=gemini_key,
                     temperature=0.0,
                     max_retries=0,
@@ -84,28 +84,28 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
             system_prompt = (
                 "You are an AI Incident Commander action item extraction engine. "
                 "Analyze the spoken utterance from an incident call and extract "
-                "CONCRETE ACTION ITEMS, TASKS, ASSIGNED FOLLOW-UPS, OR WORK ITEMS THAT NEED TO BE DONE.\n\n"
+                "CONCRETE ACTION ITEMS, TASKS, ASSIGNED FOLLOW-UPS, OR WORK ITEMS.\n\n"
                 "CLASSIFICATION RULES:\n"
                 "- DO extract: tasks assigned to someone, steps someone will take, work that needs doing\n"
                 "- DO NOT extract: pure facts/observations, status updates with no action, completed work\n\n"
                 "EXAMPLES:\n"
                 "- 'Alex will check the database logs by 5 PM' → action item (assignee=Alex, priority=high)\n"
-                "- 'I'll update the status page in 10 minutes' → action item (priority=medium)\n"
-                "- 'Someone needs to restart the Redis cluster' → action item (priority=urgent)\n"
-                "- 'We need to rollback the deploy' → action item (priority=high)\n"
-                "- 'The database is down' → NOT an action item (this is a fact)\n"
-                "- 'CPU is at 95%' → NOT an action item (this is a metric/observation)\n\n"
-                "PRIORITY CLASSIFICATION:\n"
-                "- urgent: immediate action required, system down, data loss risk\n"
-                "- high: should be done within the hour, major impact\n"
-                "- medium: should be done today, moderate impact\n"
-                "- low: nice to have, minor impact\n\n"
+                "- 'I\'ll update the status page in 10 minutes' → action item (priority=medium)\n"
+                "- 'Someone needs to restart the Redis cluster NOW' → action item (priority=urgent)\n"
+                "- 'We need to rollback the deploy immediately' → action item (priority=urgent)\n"
+                "- 'Let\'s set up monitoring alerts for this' → action item (priority=low)\n"
+                "- 'The database is down' → NOT an action item (this is a fact)\n\n"
+                "PRIORITY CALIBRATION (be precise):\n"
+                "- urgent: system down NOW, data loss risk, customer impact, words like 'immediately', 'ASAP', 'emergency', 'now', 'right away'\n"
+                "- high: major impact, must be done within the hour, words like 'quickly', 'soon', 'before EOD'\n"
+                "- medium: moderate impact, should be done today\n"
+                "- low: nice to have, minor impact, no deadline pressure\n\n"
                 "ISSUE TYPE CLASSIFICATION:\n"
                 "- Bug: fix errors, crashes, outages, failures\n"
                 "- Task: investigate, analyze, review, monitor, check, restart, rollback\n"
                 "- Story: implement, build, add features, improve\n\n"
-                "Return response JSON: {\"action_items\": [{\"description\": \"...\", \"assignee_name\": \"...\", \"raw_due_date\": \"...\", \"priority\": \"medium|high|urgent|low\", \"issue_type\": \"Bug|Task|Story\", \"status\": \"open\"}]}\n"
-                "If NO action items are present, return: {\"action_items\": []}"
+                "Return JSON: {\"action_items\": [{\"description\": \"...\", \"assignee_name\": \"...\", \"raw_due_date\": \"...\", \"priority\": \"urgent|high|medium|low\", \"issue_type\": \"Bug|Task|Story\", \"status\": \"open\"}]}\n"
+                "If NO action items found, return: {\"action_items\": []}"
             )
 
             response = llm.invoke([

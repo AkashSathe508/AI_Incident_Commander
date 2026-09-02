@@ -13,8 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,15 @@ class TranscriptIngestor:
     def __init__(self) -> None:
         # In-memory deduplication cache: set of (meeting_id_str, speaker_key, start_ms)
         self._seen_segments: set[tuple[str, str, int]] = set()
+        # Cached sync engine — created lazily and reused across calls
+        self._engine = None
+
+    def _get_engine(self, sync_url: str):
+        """Return a cached SQLAlchemy sync engine, creating it on first use."""
+        if self._engine is None:
+            from sqlalchemy import create_engine
+            self._engine = create_engine(sync_url, pool_pre_ping=True)
+        return self._engine
 
     def process_and_save(
         self,
@@ -95,7 +103,7 @@ class TranscriptIngestor:
             part_id_uuid = None
 
         try:
-            engine = create_engine(sync_url, pool_pre_ping=True)
+            engine = self._get_engine(sync_url)
             with engine.connect() as conn:
                 # DB-level deduplication check
                 check_sql = text("""
@@ -114,7 +122,6 @@ class TranscriptIngestor:
 
                 if existing:
                     logger.info("Deduplicated DB segment for meeting %s at %d ms", meeting_str[:8], start_ms)
-                    engine.dispose()
                     return None
 
                 insert_sql = text("""
@@ -137,7 +144,6 @@ class TranscriptIngestor:
                     },
                 )
                 conn.commit()
-            engine.dispose()
             logger.info(
                 "[INGEST] Saved transcript segment meeting=%s speaker=%s text='%s'",
                 meeting_str[:8],

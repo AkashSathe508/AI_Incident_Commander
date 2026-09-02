@@ -186,7 +186,7 @@ async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> No
                 logger.warning("Error fetching full history for WS client: %s", exc)
             break
     except Exception as exc:
-                logger.warning("DB session error in WS handler: %s", exc)
+        logger.warning("DB session error in WS handler: %s", exc)
 
     try:
         while True:

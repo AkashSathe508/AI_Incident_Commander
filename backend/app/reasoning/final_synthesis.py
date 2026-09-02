@@ -104,7 +104,7 @@ def generate_final_synthesis(meeting_id: str) -> dict[str, Any]:
                     else:
                         from langchain_google_genai import ChatGoogleGenerativeAI
                         llm = ChatGoogleGenerativeAI(
-                            model="gemini-3.5-flash-lite",
+                            model="gemini-2.0-flash",
                             google_api_key=gemini_key,
                             temperature=0.2,
                             max_retries=0,
@@ -128,7 +128,6 @@ def generate_final_synthesis(meeting_id: str) -> dict[str, Any]:
                     parsed = parse_llm_json(res.content)
                     executive_summary = parsed.get("executive_summary", executive_summary)
                     unresolved_questions = parsed.get("unresolved_questions", [])
-                        unresolved_questions = parsed.get("unresolved_questions", [])
                 except Exception as exc:
                     logger.warning("Gemini final synthesis LLM call failed: %s", exc)
 

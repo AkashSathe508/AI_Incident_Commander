@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 class ExtractedFact(BaseModel):
     statement: str = Field(description="Objective factual claim extracted from transcript")
     confidence: float = Field(default=0.9, description="Confidence score between 0.0 and 1.0")
+    category: str = Field(default="status", description="One of: metric | status | error | timeline | system | root_cause")
 
 
 class FactExtractionResponse(BaseModel):
@@ -74,7 +75,7 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-2.0-flash",
                     google_api_key=gemini_key,
                     temperature=0.0,
                     max_retries=0,
@@ -85,10 +86,18 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
                 "Analyze the spoken utterance from an incident response call and extract "
                 "EXPLICIT, OBJECTIVE FACTUAL CLAIMS ONLY.\n\n"
                 "RULES:\n"
-                "1. ONLY extract clear, objective factual claims (e.g. error codes, system metrics, outage reports, status).\n"
-                "2. EXPLICITLY DO NOT include opinions, predictions, guesses, subjective feeling, or speculative comments.\n"
-                "3. If no clear factual claim is made, return an empty list.\n"
-                "4. Return response in JSON format: {\"facts\": [{\"statement\": \"...\", \"confidence\": 0.95}]}"
+                "1. ONLY extract clear, objective factual claims (e.g. error codes, system metrics, outage reports, service status).\n"
+                "2. DO NOT include opinions, predictions, guesses, or speculative comments.\n"
+                "3. Be INCLUSIVE — even short status facts count (e.g. 'Redis is down', 'CPU at 98%').\n"
+                "4. Assign a category from: metric | status | error | timeline | system | root_cause\n"
+                "   - metric: numbers, percentages, latency, throughput\n"
+                "   - status: service up/down, health check results\n"
+                "   - error: error codes, exceptions, stack traces\n"
+                "   - timeline: when something happened, deployment times\n"
+                "   - system: which service, host, cluster is affected\n"
+                "   - root_cause: confirmed cause of an issue\n"
+                "5. Return JSON: {\"facts\": [{\"statement\": \"...\", \"confidence\": 0.95, \"category\": \"status\"}]}\n"
+                "If NO facts found, return: {\"facts\": []}"
             )
 
             user_prompt = f"Speaker ({speaker_name}): \"{segment_text}\""
@@ -106,6 +115,7 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
                         ExtractedFact(
                             statement=item["statement"],
                             confidence=float(item.get("confidence", 0.95)),
+                            category=item.get("category", "status"),
                         )
                     )
         except Exception as exc:

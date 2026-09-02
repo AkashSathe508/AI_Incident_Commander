@@ -281,6 +281,18 @@ def _load_historical_claims(meeting_id: str) -> list[dict[str, Any]]:
                     "speaker": "Speaker",
                     "source_segment_id": None,
                 })
+
+            # Query recent action items (previously missing — caused conflict pairs to never form)
+            sql_a = text("SELECT id, description FROM action_items WHERE meeting_id = :id ORDER BY created_at DESC LIMIT 10")
+            rows_a = conn.execute(sql_a, {"id": meeting_uuid}).fetchall()
+            for r in rows_a:
+                claims.append({
+                    "id": str(r[0]),
+                    "type": "action_item",
+                    "content": r[1],
+                    "speaker": "Speaker",
+                    "source_segment_id": None,
+                })
     except Exception as exc:
         logger.warning("Failed to load historical claims from DB: %s", exc)
     finally:

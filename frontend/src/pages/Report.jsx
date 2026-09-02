@@ -293,6 +293,110 @@ export default function Report() {
           )}
         </section>
 
+        {/* ── Jira Backlog ──────────────────────────────────────────────────── */}
+        {approvals?.some((a) => a.action_type === "jira" && a.status === "approved") && (
+          <section style={{ marginBottom: "2rem" }}>
+            <h3 style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: "1rem", color: "#38bdf8", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span style={{ fontSize: "1.3rem" }}>🗂️</span>
+              Jira Backlog ({approvals.filter((a) => a.action_type === "jira" && a.status === "approved").length} issues created)
+            </h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              {approvals
+                .filter((a) => a.action_type === "jira" && a.status === "approved")
+                .map((appr) => {
+                  const result = appr.execution_result || {};
+                  const isMock = result.mock === true;
+                  const isError = result.status === "error";
+                  return (
+                    <div
+                      key={appr.id}
+                      style={{
+                        background: "rgba(56,189,248,0.07)",
+                        border: "1px solid rgba(56,189,248,0.25)",
+                        borderRadius: "10px",
+                        padding: "1rem 1.25rem",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "1rem",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      {/* Issue key badge */}
+                      <a
+                        href={result.url || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          background: isError ? "rgba(239,68,68,0.15)" : isMock ? "rgba(234,179,8,0.15)" : "rgba(56,189,248,0.15)",
+                          color: isError ? "#ef4444" : isMock ? "#eab308" : "#38bdf8",
+                          border: `1px solid ${isError ? "#ef4444" : isMock ? "#eab308" : "#38bdf8"}`,
+                          borderRadius: "6px",
+                          padding: "0.25rem 0.75rem",
+                          fontWeight: 700,
+                          fontSize: "0.85rem",
+                          textDecoration: "none",
+                          whiteSpace: "nowrap",
+                          minWidth: "80px",
+                          textAlign: "center",
+                        }}
+                      >
+                        {isError ? "ERROR" : result.issue_key || "PENDING"}
+                      </a>
+
+                      {/* Title & description */}
+                      <div style={{ flex: 1 }}>
+                        <p style={{ margin: 0, fontWeight: 600, color: "#f1f5f9", fontSize: "0.92rem" }}>{appr.title}</p>
+                        {appr.description && (
+                          <p style={{ margin: "0.2rem 0 0", color: "var(--text-muted)", fontSize: "0.82rem" }}>{appr.description}</p>
+                        )}
+                        {isError && (
+                          <p style={{ margin: "0.3rem 0 0", color: "#ef4444", fontSize: "0.8rem" }}>
+                            ⚠️ {result.error}
+                          </p>
+                        )}
+                        {isMock && (
+                          <p style={{ margin: "0.3rem 0 0", color: "#eab308", fontSize: "0.8rem" }}>
+                            ⚠️ Mock issue — configure JIRA_DOMAIN & JIRA_USER_EMAIL in .env to create real issues.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Priority badge */}
+                      {result.priority && (
+                        <span
+                          style={{
+                            background: result.priority === "urgent" ? "rgba(239,68,68,0.15)" : result.priority === "high" ? "rgba(249,115,22,0.15)" : "rgba(148,163,184,0.1)",
+                            color: result.priority === "urgent" ? "#ef4444" : result.priority === "high" ? "#f97316" : "#94a3b8",
+                            border: "1px solid currentColor",
+                            borderRadius: "6px",
+                            padding: "0.2rem 0.6rem",
+                            fontSize: "0.75rem",
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          {result.priority}
+                        </span>
+                      )}
+
+                      {/* Open in Jira link */}
+                      {!isError && result.url && (
+                        <a
+                          href={result.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: "#38bdf8", fontSize: "0.8rem", textDecoration: "underline", whiteSpace: "nowrap" }}
+                        >
+                          Open in Jira →
+                        </a>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </section>
+        )}
+
         {/* ── External Action Approvals Ledger ───────────────────────────── */}
         {approvals?.length > 0 && (
           <section style={{ marginBottom: "2rem" }}>
@@ -300,33 +404,47 @@ export default function Report() {
               🛡️ External Action Approvals ({approvals.length})
             </h3>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
-              {approvals.map((appr) => (
-                <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
-                  <div className="intel-card-header">
-                    <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
-                    <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
-                      {appr.status.toUpperCase()}
-                    </span>
-                  </div>
-                  <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
-                  {appr.description && <p className="intel-card-sub">{appr.description}</p>}
-
-                  {appr.status === "pending" ? (
-                    <div className="approval-actions">
-                      <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
-                        ✓ Approve &amp; Execute
-                      </button>
-                      <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
-                        ✕ Reject
-                      </button>
+              {approvals.map((appr) => {
+                const result = appr.execution_result || {};
+                return (
+                  <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
+                    <div className="intel-card-header">
+                      <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
+                      <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
+                        {appr.status.toUpperCase()}
+                      </span>
                     </div>
-                  ) : (
-                    <p className="intel-card-sub" style={{ color: "var(--text-muted)", marginTop: "0.2rem" }}>
-                      {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
-                    </p>
-                  )}
-                </div>
-              ))}
+                    <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
+                    {appr.description && <p className="intel-card-sub">{appr.description}</p>}
+
+                    {appr.status === "pending" ? (
+                      <div className="approval-actions">
+                        <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
+                          ✓ Approve &amp; Execute
+                        </button>
+                        <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
+                          ✕ Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="intel-card-sub" style={{ color: "var(--text-muted)", marginTop: "0.2rem" }}>
+                          {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
+                        </p>
+                        {result.issue_key && (
+                          <a href={result.url} target="_blank" rel="noopener noreferrer"
+                            style={{ color: "#38bdf8", fontSize: "0.8rem", textDecoration: "underline" }}>
+                            {result.issue_key} — Open in Jira →
+                          </a>
+                        )}
+                        {result.status === "error" && (
+                          <p style={{ color: "#ef4444", fontSize: "0.8rem", marginTop: "0.3rem" }}>⚠️ {result.error}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}

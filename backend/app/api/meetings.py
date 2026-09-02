@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -389,7 +390,7 @@ async def end_meeting(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
 
     meeting.status = "ended"
-    meeting.ended_at = func.now()
+    meeting.ended_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Stop AI agent subprocess if running
@@ -645,7 +646,7 @@ async def ask_meeting(
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-2.0-flash",
                     google_api_key=gemini_key,
                     temperature=0.0,
                     max_retries=0,
@@ -720,6 +721,7 @@ async def get_pending_approvals(meeting_id: str, db: AsyncSession = Depends(get_
                 "description": a.description,
                 "payload": a.payload,
                 "status": a.status,
+                "execution_result": a.execution_result,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
                 "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
             }
@@ -754,7 +756,7 @@ async def approve_action(meeting_id: str, approval_id: str, db: AsyncSession = D
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending approval not found")
 
     approval.status = "approved"
-    approval.resolved_at = func.now()
+    approval.resolved_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Execute the requested external tool action
@@ -806,6 +808,10 @@ async def approve_action(meeting_id: str, approval_id: str, db: AsyncSession = D
         logger.error("Error executing approved integration %s: %s", action_type, exc)
         execution_result = {"status": "error", "error": str(exc)}
 
+    # Persist the execution result so it can be shown in Jira backlog / report
+    approval.execution_result = execution_result
+    await db.commit()
+
     # Broadcast updated approval event via WebSocket
     approval_dict = {
         "id": str(approval.id),
@@ -851,7 +857,7 @@ async def reject_action(meeting_id: str, approval_id: str, db: AsyncSession = De
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending approval not found")
 
     approval.status = "rejected"
-    approval.resolved_at = func.now()
+    approval.resolved_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Broadcast rejected event via WebSocket

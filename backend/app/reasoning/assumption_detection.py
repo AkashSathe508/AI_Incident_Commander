@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 class ExtractedAssumption(BaseModel):
     statement: str = Field(description="Speculative assumption, prediction, or opinion claim")
     status: str = Field(default="pending", description="Status: pending | confirmed | rejected")
+    basis: str | None = Field(default=None, description="Stated basis or reasoning behind the assumption")
+    owner_name: str | None = Field(default=None, description="Name of speaker making the assumption")
 
 
 def detect_assumptions_node(state: MeetingState) -> dict[str, Any]:
@@ -64,20 +66,29 @@ def detect_assumptions_node(state: MeetingState) -> dict[str, Any]:
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-2.0-flash",
                     google_api_key=gemini_key,
                     temperature=0.0,
                     max_retries=0,
                 )
 
             system_prompt = (
-                "You are an AI Incident Commander assumption detection engine. "
+                "You are an AI Incident Commander hypothesis detection engine. "
                 "Analyze the spoken utterance from an incident call and extract "
-                "UNVERIFIED ASSUMPTIONS, PREDICTIONS, GUESSES, HYPOTHESES, OR OPINIONS ONLY.\n\n"
-                "CRITICAL MANDATE: NEVER extract proven, objective facts (e.g., 'API is down' or 'status 500'). "
-                "ONLY extract speculative statements (e.g. 'I think it might be the database', "
-                "'Probably caused by the latest release', 'Maybe memory ran out').\n"
-                "Return response JSON: {\"assumptions\": [{\"statement\": \"...\", \"status\": \"pending\"}]}"
+                "UNVERIFIED ASSUMPTIONS, HYPOTHESES, PREDICTIONS, GUESSES, OR OPINIONS.\n\n"
+                "MANDATE: Be INCLUSIVE. Extract even tentative hypotheses.\n"
+                "EXAMPLES of what to extract:\n"
+                "- 'I think it might be the database' → hypothesis\n"
+                "- 'Probably caused by the latest release' → hypothesis\n"
+                "- 'Maybe memory ran out' → hypothesis\n"
+                "- 'It could be a network issue' → hypothesis\n"
+                "- 'I suspect the config change caused this' → hypothesis\n"
+                "- 'This looks like a deadlock to me' → hypothesis\n"
+                "EXAMPLES of what NOT to extract:\n"
+                "- 'API returned 500' → fact (not a hypothesis)\n"
+                "- 'CPU is at 98%' → fact (not a hypothesis)\n"
+                "Return JSON: {\"assumptions\": [{\"statement\": \"...\", \"status\": \"pending\", \"basis\": \"...\", \"owner_name\": \"...\"}]}\n"
+                "If NO hypotheses found, return: {\"assumptions\": []}"
             )
 
             response = llm.invoke([
@@ -92,6 +103,7 @@ def detect_assumptions_node(state: MeetingState) -> dict[str, Any]:
                     extracted.append(
                         ExtractedAssumption(
                             statement=item["statement"],
+                            status=item.get("status", "pending"),
                             basis=item.get("basis"),
                             owner_name=item.get("owner_name") or speaker_name,
                         )
@@ -101,7 +113,7 @@ def detect_assumptions_node(state: MeetingState) -> dict[str, Any]:
 
     # Heuristic fallback if LLM is unavailable or failed
     if not extracted and _is_likely_assumption(segment_text):
-        extracted.append(ExtractedAssumption(statement=segment_text, status="pending", owner_name=speaker_name))
+        extracted.append(ExtractedAssumption(statement=segment_text, status="pending", owner_name=speaker_name, basis=None))
 
     if not extracted:
         return {"assumptions": [], "evidence": []}

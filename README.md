@@ -2,37 +2,68 @@
 
 Real-time AI-powered incident response platform.
 
+## Features
+
+- **Real-time Live Audio Transcription**: Uses Agora RTC SDK and Deepgram STT (or Browser Web Speech API) to capture live meeting audio.
+- **AI Agent Intelligence**: Continuously processes transcripts using Gemini 2.0 Flash or Groq Llama 3 to extract:
+  - Verifiable Facts
+  - Implicit Assumptions
+  - Key Decisions
+  - Action Items
+  - Conflicts & Risks
+- **Human-in-the-Loop Action Approvals**: The AI agent proposes integrations like Jira tickets, Slack posts, or PagerDuty pages. These stay pending until approved by a human operator in real-time.
+- **Final Synthesis**: Generates a comprehensive executive summary once the meeting ends.
+
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.11, FastAPI, SQLAlchemy 2.x (async) |
+| Backend | Python 3.11, FastAPI, SQLAlchemy 2.x (async), LangGraph |
 | Database | PostgreSQL 16 + pgvector |
 | Cache | Redis 7 |
-| Frontend | React 18 + Vite + Tailwind CSS |
+| Frontend | React 19 + Vite + Tailwind CSS |
 | Real-time Audio | Agora RTC SDK |
-| Migrations | Alembic |
-| Infra | Docker Compose |
+| LLMs | Google Gemini 2.0 Flash, Groq |
 
 ## Quick Start
 
+### 1. Environment Setup
+
+Copy the example environment file and fill in your secrets:
+
 ```bash
-# 1. Copy env file and fill in secrets
 cp .env.example .env
+```
 
-# 2. Start all services
-docker-compose up -d
+You must provide either `GEMINI_API_KEY` or `GROQ_API_KEY` for the AI processing to work.
 
-# 3. Apply migrations
+### 2. Run with Docker Compose (Recommended)
+
+Start the PostgreSQL, Redis, and FastAPI backend services:
+
+```bash
+docker-compose up -d --build
+```
+
+### 3. Database Migrations
+
+Apply the Alembic migrations to set up the 14 database tables (including pgvector embeddings):
+
+```bash
 docker-compose exec backend alembic upgrade head
+```
 
-# 4. Verify health
-curl http://localhost:8000/health
+### 4. Start the Frontend
 
-# 5. Start frontend dev server
+In a separate terminal, install dependencies and start the Vite dev server:
+
+```bash
 cd frontend
+npm install
 npm run dev
 ```
+
+Navigate to `http://localhost:5173` to create or join an incident room.
 
 ## Project Structure
 
@@ -40,34 +71,38 @@ npm run dev
 incident-commander/
 ├── backend/
 │   ├── app/
-│   │   ├── api/          # REST route handlers
-│   │   ├── ws/           # WebSocket handlers
-│   │   ├── agent/        # LLM agent orchestration
-│   │   ├── graph/        # LangGraph state machines
-│   │   ├── ingestion/    # Audio/data ingestion
-│   │   ├── reasoning/    # LLM reasoning chains
-│   │   ├── temporal/     # Event ordering
+│   │   ├── api/          # REST route handlers (Meetings, WS, Health)
+│   │   ├── ws/           # WebSocket managers for live intel streaming
+│   │   ├── agent/        # LLM agent orchestration & TTS
+│   │   ├── graph/        # LangGraph state machine workflow
+│   │   ├── ingestion/    # Real-time transcript ingestion & DB dedup
+│   │   ├── reasoning/    # Core AI logic (Extraction, Synthesis, Approval Engine)
+│   │   ├── temporal/     # Event ordering and timeline tracking
 │   │   ├── models/       # SQLAlchemy ORM (14 tables)
-│   │   ├── services/     # Business logic
-│   │   ├── workers/      # Background workers
-│   │   └── config/       # Pydantic settings
-│   ├── alembic/          # Migrations
+│   │   ├── services/     # Core business logic
+│   │   └── config/       # Pydantic settings parsing
+│   ├── alembic/          # DB Migrations
 │   ├── Dockerfile
 │   └── requirements.txt
-├── frontend/             # React + Vite + Tailwind
+├── frontend/             # React + Vite + Tailwind 
+│   └── src/
+│       ├── pages/        # CreateRoom, Room, Report
+│       └── components/   # UI blocks and Report generation
 ├── docker-compose.yml
 └── .env.example
 ```
 
-## API
+## API Docs
 
+When the backend is running, you can access the API documentation at:
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
-- **Health**: http://localhost:8000/health
 
 ## Database Schema
 
-14 tables:
-`meetings`, `participants`, `transcript_segments`, `facts`, `assumptions`,
-`decisions`, `action_items`, `conflicts`, `timeline_events`, `risks`,
-`evidence`, `embeddings` (pgvector 1536-dim), `agent_runs`, `graph_checkpoints`
+The platform relies on 14 PostgreSQL tables:
+- Core: `meetings`, `participants`, `transcript_segments`
+- Intelligence: `facts`, `assumptions`, `decisions`, `action_items`, `conflicts`, `risks`
+- Chronology: `timeline_events`, `evidence`
+- Machine Learning: `embeddings` (pgvector 1536-dim)
+- State & Workflow: `agent_runs`, `graph_checkpoints`, `pending_approvals`

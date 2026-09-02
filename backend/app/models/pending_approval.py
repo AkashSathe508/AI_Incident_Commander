@@ -26,6 +26,7 @@ class PendingApproval(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending", index=True)  # 'pending' | 'approved' | 'rejected'
+    execution_result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=True, default=None)  # Jira issue key, URL, etc.
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(default=None, nullable=True)
 
