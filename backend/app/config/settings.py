@@ -43,8 +43,12 @@ class Settings(BaseSettings):
     # Optional external action integrations; mocked when unset.
     slack_webhook_url: str = ""
     slack_bot_token: str = ""
+    slack_default_channel: str = "#incidents"
     pagerduty_routing_key: str = ""
     jira_api_token: str = ""
+    jira_domain: str = ""           # e.g. yourorg.atlassian.net
+    jira_user_email: str = ""       # Atlassian account email
+    jira_project_key: str = "INC"   # Default Jira project key
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]

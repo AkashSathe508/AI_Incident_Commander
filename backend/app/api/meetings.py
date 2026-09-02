@@ -86,8 +86,20 @@ def _generate_agora_token(channel_name: str, uid: int) -> str | None:
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
+class IntegrationConfig(BaseModel):
+    """Per-session integration credentials supplied from the UI."""
+    jira_domain: str = ""
+    jira_user_email: str = ""
+    jira_api_token: str = ""
+    jira_project_key: str = "INC"
+    slack_webhook_url: str = ""
+    slack_bot_token: str = ""
+    slack_channel: str = "#incidents"
+
+
 class CreateMeetingRequest(BaseModel):
     title: str = Field(default="Incident Room", max_length=255)
+    integration_config: IntegrationConfig = Field(default_factory=IntegrationConfig)
 
 
 class CreateMeetingResponse(BaseModel):
@@ -145,16 +157,22 @@ async def create_meeting(
     """
     Creates a new meeting and derives a unique Agora channel name from its UUID.
     Returns the meeting ID and a shareable channel identifier.
+    Integration config (Jira/Slack credentials) is stored as JSON for use when approving actions.
     """
+    import json as _json
     # Pre-generate UUID so the channel name can be computed before the INSERT
     meeting_id = uuid.uuid4()
     channel_name = f"room-{meeting_id}"
+
+    # Store integration_config as JSON in meeting.description (repurposed as metadata store)
+    integration_meta = body.integration_config.model_dump()
 
     meeting = Meeting(
         id=meeting_id,
         title=body.title,
         channel_name=channel_name,
         status="active",
+        description=_json.dumps({"integration_config": integration_meta}),
     )
     db.add(meeting)
     await db.commit()
@@ -744,20 +762,38 @@ async def approve_action(meeting_id: str, approval_id: str, db: AsyncSession = D
     action_type = approval.action_type
     payload = approval.payload or {}
 
+    # Load per-session integration config from meeting metadata
+    import json as _json
+    meeting_result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    the_meeting = meeting_result.scalar_one_or_none()
+    integration_cfg: dict = {}
+    if the_meeting and the_meeting.description:
+        try:
+            meta = _json.loads(the_meeting.description)
+            integration_cfg = meta.get("integration_config", {})
+        except Exception:
+            pass
+
     try:
         if action_type == "jira":
             from app.reasoning.integrations.jira_tool import create_jira_issue
             execution_result = create_jira_issue(
                 summary=payload.get("summary", approval.title),
                 description=payload.get("description", ""),
-                project_key=payload.get("project_key", "INC"),
+                project_key=payload.get("project_key") or integration_cfg.get("jira_project_key") or "INC",
                 issue_type=payload.get("issue_type", "Task"),
+                priority=payload.get("priority", "medium"),
+                domain=integration_cfg.get("jira_domain") or None,
+                email=integration_cfg.get("jira_user_email") or None,
+                token=integration_cfg.get("jira_api_token") or None,
             )
         elif action_type == "slack":
             from app.reasoning.integrations.slack_tool import post_slack_message
             execution_result = post_slack_message(
                 message=payload.get("message", approval.title),
-                channel=payload.get("channel", "#incident-room"),
+                channel=payload.get("channel") or integration_cfg.get("slack_channel") or "#incidents",
+                webhook_url=integration_cfg.get("slack_webhook_url") or None,
+                bot_token=integration_cfg.get("slack_bot_token") or None,
             )
         elif action_type == "pagerduty":
             from app.reasoning.integrations.pagerduty_tool import trigger_pagerduty_incident

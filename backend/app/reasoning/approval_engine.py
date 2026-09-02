@@ -36,33 +36,43 @@ def evaluate_action_triggers(state: MeetingState) -> list[dict[str, Any]]:
 
     created_approvals = []
 
-    # 1. Jira Trigger: Unassigned Action Items
+    # 1. Jira Trigger: Action items with priority medium or higher
     action_items = state.get("action_items", [])
     for ai in action_items:
-        assignee = ai.get("assignee_name") or ai.get("assignee")
-        if not assignee or str(assignee).lower() in ("unassigned", "none", "null", ""):
-            desc = ai.get("description", "Action item requires assignment")
-            title = f"Create Jira Ticket: '{desc[:60]}'"
-            payload = {
-                "summary": desc,
-                "description": f"Incident Action Item with no current owner.\nDue: {ai.get('due_date', 'ASAP')}",
-                "project_key": "INC",
-                "issue_type": "Task",
-            }
-            appr = _create_pending_approval_if_new(meeting_id, "jira", title, desc, payload)
-            if appr:
-                created_approvals.append(appr)
+        priority = str(ai.get("priority", "medium")).lower()
+        # Only escalate medium, high, or urgent items (skip low-priority noise)
+        if priority not in ("medium", "high", "urgent"):
+            continue
+        desc = ai.get("description", "Action item requires assignment")
+        # Classify issue type based on keywords if not provided
+        issue_type = ai.get("issue_type") or _classify_issue_type(desc)
+        title = f"[{issue_type.upper()}] {desc[:60]}"
+        payload = {
+            "summary": desc,
+            "description": (
+                f"Incident Action Item\n"
+                f"Assignee: {ai.get('assignee_name', 'Unassigned')}\n"
+                f"Due: {ai.get('due_date', 'ASAP')}\n"
+                f"Priority: {priority.capitalize()}"
+            ),
+            "project_key": "INC",
+            "issue_type": issue_type,
+            "priority": priority,
+        }
+        appr = _create_pending_approval_if_new(meeting_id, "jira", title, desc, payload)
+        if appr:
+            created_approvals.append(appr)
 
     # 2. Slack Trigger: High-severity unresolved conflicts
     conflicts = state.get("conflicts", [])
     for conf in conflicts:
-        status = str(conf.get("status", "open")).lower()
-        if status in ("open", "unresolved"):
+        conf_status = str(conf.get("status", "open")).lower()
+        if conf_status in ("open", "unresolved"):
             desc = conf.get("description", "Unresolved incident conflict")
             title = f"Post Slack Incident Alert: '{desc[:60]}'"
             payload = {
                 "message": f"⚠️ INCIDENT CONFLICT DETECTED:\n{desc}\nPlease resolve immediately.",
-                "channel": "#incident-room",
+                "channel": "#incidents",
             }
             appr = _create_pending_approval_if_new(meeting_id, "slack", title, desc, payload)
             if appr:
@@ -85,6 +95,20 @@ def evaluate_action_triggers(state: MeetingState) -> list[dict[str, Any]]:
                 created_approvals.append(appr)
 
     return created_approvals
+
+
+def _classify_issue_type(description: str) -> str:
+    """Classify Jira issue type based on action item description keywords."""
+    lower = description.lower()
+    if any(kw in lower for kw in ("bug", "error", "exception", "crash", "broken", "failure", "not working", "incorrect")):
+        return "Bug"
+    if any(kw in lower for kw in ("incident", "outage", "down", "critical", "sev", "p0", "p1", "emergency", "restart")):
+        return "Bug"
+    if any(kw in lower for kw in ("investigate", "analysis", "root cause", "rca", "diagnose", "check", "review", "monitor")):
+        return "Task"
+    if any(kw in lower for kw in ("feature", "implement", "add", "build", "create", "develop", "improve")):
+        return "Story"
+    return "Task"
 
 
 def _create_pending_approval_if_new(

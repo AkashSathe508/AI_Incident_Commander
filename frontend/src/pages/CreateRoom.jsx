@@ -32,6 +32,16 @@ export default function CreateRoom() {
   const [result, setResult] = useState(null); // { meeting_id, channel_name, title }
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
+  const [showIntegrations, setShowIntegrations] = useState(false);
+
+  // Integration settings state
+  const [jiraDomain, setJiraDomain] = useState("");
+  const [jiraEmail, setJiraEmail] = useState("");
+  const [jiraToken, setJiraToken] = useState("");
+  const [jiraProject, setJiraProject] = useState("INC");
+  const [slackWebhook, setSlackWebhook] = useState("");
+  const [slackToken, setSlackToken] = useState("");
+  const [slackChannel, setSlackChannel] = useState("#incidents");
   const navigate = useNavigate();
 
   async function handleCreate(e) {
@@ -39,10 +49,23 @@ export default function CreateRoom() {
     setLoading(true);
     setError("");
     try {
+      const bodyPayload = {
+        title: title.trim() || "Incident Room",
+        integration_config: {
+          jira_domain: jiraDomain.trim(),
+          jira_user_email: jiraEmail.trim(),
+          jira_api_token: jiraToken.trim(),
+          jira_project_key: jiraProject.trim() || "INC",
+          slack_webhook_url: slackWebhook.trim(),
+          slack_bot_token: slackToken.trim(),
+          slack_channel: slackChannel.trim() || "#incidents",
+        }
+      };
+
       const res = await fetch(`${API}/meetings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim() || "Incident Room" }),
+        body: JSON.stringify(bodyPayload),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
@@ -111,6 +134,52 @@ export default function CreateRoom() {
                 maxLength={255}
                 autoFocus
               />
+            </div>
+
+            <div className="integration-section" style={{ marginTop: '1rem', borderTop: '1px solid #e2e8f0', paddingTop: '1rem' }}>
+              <button 
+                type="button" 
+                className="btn-ghost" 
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', padding: '0.5rem', background: '#f8fafc', borderRadius: '6px' }}
+                onClick={() => setShowIntegrations(!showIntegrations)}
+              >
+                <span>⚙️ Integrations (Jira / Slack)</span>
+                <span>{showIntegrations ? "▲" : "▼"}</span>
+              </button>
+
+              {showIntegrations && (
+                <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.875rem', textAlign: 'left' }}>
+                  <p style={{ color: '#64748b', fontSize: '0.8rem', margin: 0 }}>Leave blank to use mock mode or `.env` defaults.</p>
+                  
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Jira Domain</label>
+                    <input type="text" value={jiraDomain} onChange={e => setJiraDomain(e.target.value)} className="field-input" placeholder="org.atlassian.net" />
+                  </div>
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Jira User Email</label>
+                    <input type="email" value={jiraEmail} onChange={e => setJiraEmail(e.target.value)} className="field-input" placeholder="you@company.com" />
+                  </div>
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Jira API Token</label>
+                    <input type="password" value={jiraToken} onChange={e => setJiraToken(e.target.value)} className="field-input" placeholder="ATATT3x..." />
+                  </div>
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Jira Project Key</label>
+                    <input type="text" value={jiraProject} onChange={e => setJiraProject(e.target.value)} className="field-input" placeholder="INC" />
+                  </div>
+
+                  <hr style={{ border: 0, borderTop: '1px solid #e2e8f0', margin: '0.5rem 0' }} />
+
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Slack Webhook URL (or Bot Token)</label>
+                    <input type="password" value={slackWebhook} onChange={e => setSlackWebhook(e.target.value)} className="field-input" placeholder="https://hooks.slack.com/... or xoxb-..." />
+                  </div>
+                  <div className="field-wrap" style={{ margin: 0 }}>
+                    <label className="field-label">Slack Channel</label>
+                    <input type="text" value={slackChannel} onChange={e => setSlackChannel(e.target.value)} className="field-input" placeholder="#incidents" />
+                  </div>
+                </div>
+              )}
             </div>
 
             {error && <p className="error-msg">{error}</p>}

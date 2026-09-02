@@ -732,33 +732,54 @@ export default function Room() {
                 {approvals.length === 0 ? (
                   <div className="transcript-empty"><p>No pending external action approvals. Everything clear!</p></div>
                 ) : (
-                  approvals.map((appr) => (
-                    <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
-                      <div className="intel-card-header">
-                        <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
-                        <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
-                          {appr.status.toUpperCase()}
-                        </span>
-                      </div>
-                      <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
-                      {appr.description && <p className="intel-card-sub">{appr.description}</p>}
-
-                      {appr.status === "pending" ? (
-                        <div className="approval-actions">
-                          <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
-                            ✓ Approve &amp; Execute
-                          </button>
-                          <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
-                            ✕ Reject
-                          </button>
+                  approvals.map((appr) => {
+                    const res = appr.result || {};
+                    return (
+                      <div key={appr.id} className={`approval-card approval-card--${appr.status}`}>
+                        <div className="intel-card-header">
+                          <span className={`pill-badge approval-badge-${appr.action_type}`}>{appr.action_type.toUpperCase()} ACTION</span>
+                          <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
+                            {appr.status.toUpperCase()}
+                          </span>
                         </div>
-                      ) : (
-                        <p className="intel-card-sub" style={{ color: "var(--text-muted)", marginTop: "0.2rem" }}>
-                          {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
-                        </p>
-                      )}
-                    </div>
-                  ))
+                        <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
+                        {appr.description && <p className="intel-card-sub" style={{ whiteSpace: "pre-wrap" }}>{appr.description}</p>}
+
+                        {appr.status === "pending" ? (
+                          <div className="approval-actions">
+                            <button className="btn-approve" onClick={() => handleApproveAction(appr.id)}>
+                              ✓ Approve &amp; Execute
+                            </button>
+                            <button className="btn-reject" onClick={() => handleRejectAction(appr.id)}>
+                              ✕ Reject
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="intel-card-sub" style={{ marginTop: "0.5rem" }}>
+                            <p style={{ color: appr.status === "approved" ? "#22c55e" : "#ef4444", fontWeight: 500 }}>
+                              {appr.status === "approved" ? "✓ Authorized & Executed" : "✕ Rejected by Human"}
+                            </p>
+                            
+                            {/* Execution Result Details */}
+                            {appr.status === "approved" && res && (
+                              <div style={{ marginTop: "0.5rem", padding: "0.5rem", background: "#f8fafc", borderRadius: "4px", fontSize: "0.8rem", color: "#334155" }}>
+                                {res.mock && <span style={{ display: "inline-block", background: "#fef08a", color: "#a16207", padding: "1px 6px", borderRadius: "12px", fontSize: "0.7rem", fontWeight: 600, marginRight: "8px", verticalAlign: "middle" }}>MOCK MODE</span>}
+                                {res.url ? (
+                                  <a href={res.url} target="_blank" rel="noreferrer" style={{ color: "#3b82f6", textDecoration: "none", fontWeight: 500, verticalAlign: "middle" }}>
+                                    View Issue: {res.issue_key} ↗
+                                  </a>
+                                ) : res.channel ? (
+                                  <span style={{ verticalAlign: "middle" }}>Posted to <strong>{res.channel}</strong></span>
+                                ) : res.error ? (
+                                  <span style={{ color: "#ef4444", verticalAlign: "middle" }}>Error: {res.error}</span>
+                                ) : null}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
