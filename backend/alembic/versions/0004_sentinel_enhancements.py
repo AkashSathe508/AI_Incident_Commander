@@ -40,6 +40,8 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
+    op.add_column("meetings", sa.Column("default_mode", sa.String(20), nullable=True, server_default="frequent"))
+    op.add_column("meetings", sa.Column("is_muted", sa.Boolean(), nullable=False, server_default="false"))
 
     # ── 2. ai_responses table ─────────────────────────────────────────────────
     op.create_table(
@@ -138,6 +140,8 @@ def downgrade() -> None:
     op.drop_index("ix_ai_responses_meeting_type", table_name="ai_responses")
     op.drop_table("ai_responses")
 
+    op.drop_column("meetings", "is_muted")
+    op.drop_column("meetings", "default_mode")
     op.drop_column("meetings", "integration_config")
     op.drop_column("meetings", "resolution_status")
     op.drop_column("meetings", "root_cause_status")
