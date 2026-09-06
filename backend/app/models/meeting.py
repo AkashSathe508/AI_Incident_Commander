@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Index, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, utcnow, uuid_pk
@@ -27,6 +27,18 @@ class Meeting(Base):
     ended_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    # -- New columns (additive, all nullable for backward compatibility) --------
+    # AI-generated post-meeting summary (separate from description)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Severity: SEV-1 | SEV-2 | SEV-3 | SEV-4
+    incident_severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Root cause status: investigating | identified | confirmed | unknown
+    root_cause_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Resolution status: open | mitigating | resolved | monitoring
+    resolution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Integration credentials stored as JSONB (replaces the repurposed description field)
+    integration_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # ── Relationships ─────────────────────────────────────────────────────────
     participants: Mapped[list["Participant"]] = relationship(
@@ -65,6 +77,13 @@ class Meeting(Base):
     graph_checkpoints: Mapped[list["GraphCheckpoint"]] = relationship(
         "GraphCheckpoint", back_populates="meeting", cascade="all, delete-orphan"
     )
+    # New relationships
+    ai_responses: Mapped[list["AIResponse"]] = relationship(
+        "AIResponse", back_populates="meeting", cascade="all, delete-orphan"
+    )
+    meeting_notes: Mapped[list["MeetingNote"]] = relationship(
+        "MeetingNote", back_populates="meeting", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_meetings_status_created", "status", "created_at"),
@@ -87,3 +106,5 @@ from app.models.risk import Risk  # noqa: E402, F401
 from app.models.evidence import Evidence  # noqa: E402, F401
 from app.models.agent_run import AgentRun  # noqa: E402, F401
 from app.models.graph_checkpoint import GraphCheckpoint  # noqa: E402, F401
+from app.models.ai_response import AIResponse  # noqa: E402, F401
+from app.models.meeting_note import MeetingNote  # noqa: E402, F401

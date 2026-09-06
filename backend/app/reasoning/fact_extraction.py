@@ -138,6 +138,23 @@ def extract_facts_node(state: MeetingState) -> dict[str, Any]:
         facts=extracted_facts,
     )
 
+    # Store AI response for history
+    if new_facts_state:
+        try:
+            from app.reasoning.ai_response_store import store_ai_response
+            fact_summary = "; ".join(f.get("content", "") for f in new_facts_state[:3])
+            ai_text = f"Extracted {len(new_facts_state)} fact(s) from {speaker_name}: {fact_summary}"
+            store_ai_response(
+                meeting_id=meeting_id,
+                response_text=ai_text,
+                response_type="analysis",
+                trigger="fact_extracted",
+                related_fact_ids=[f.get("id") for f in new_facts_state],
+                confidence=extracted_facts[0].confidence if extracted_facts else None,
+            )
+        except Exception as _exc:
+            logger.debug("[FACT EXTRACTION] AI response store failed: %s", _exc)
+
     return {
         "facts": new_facts_state,
         "evidence": new_evidence_state,

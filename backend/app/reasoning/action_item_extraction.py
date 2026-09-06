@@ -160,6 +160,27 @@ def extract_action_items_node(state: MeetingState) -> dict[str, Any]:
         items_with_dates=normalized_items,
     )
 
+    # Store AI response for history
+    if new_action_items:
+        try:
+            from app.reasoning.ai_response_store import store_ai_response
+            ai_items = new_action_items[:2]
+            ai_text_parts = []
+            for ai in ai_items:
+                assignee = ai.get("assignee_name") or "Unassigned"
+                ai_text_parts.append(f"{ai.get('description', '')} (Owner: {assignee})")
+            ai_text = f"Recommended action(s): {'; '.join(ai_text_parts)}"
+            store_ai_response(
+                meeting_id=meeting_id,
+                response_text=ai_text,
+                response_type="recommendation",
+                trigger="action_item_extracted",
+                related_action_ids=[a.get("id") for a in new_action_items],
+                approval_status="pending",
+            )
+        except Exception as _exc:
+            logger.debug("[ACTION ITEM EXTRACTION] AI response store failed: %s", _exc)
+
     return {"action_items": new_action_items, "evidence": new_evidence}
 
 

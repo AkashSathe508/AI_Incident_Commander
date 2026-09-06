@@ -16,6 +16,8 @@ from app.models.embedding import Embedding
 from app.models.agent_run import AgentRun
 from app.models.graph_checkpoint import GraphCheckpoint
 from app.models.pending_approval import PendingApproval
+from app.models.ai_response import AIResponse
+from app.models.meeting_note import MeetingNote
 
 __all__ = [
     "Base",
@@ -34,4 +36,6 @@ __all__ = [
     "AgentRun",
     "GraphCheckpoint",
     "PendingApproval",
+    "AIResponse",
+    "MeetingNote",
 ]

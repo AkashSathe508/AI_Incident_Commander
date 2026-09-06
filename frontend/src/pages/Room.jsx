@@ -26,7 +26,12 @@ export default function Room() {
   const [speakingUids, setSpeakingUids] = useState(new Set());
 
   // ── Real-time Feed & Intelligence States ──────────────────────────────────
-  const [activeTab, setActiveTab] = useState("transcript"); // transcript | facts | assumptions | decisions | actions | conflicts
+  const [activeTab, setActiveTab] = useState("transcript"); // transcript | facts | assumptions | decisions | actions | conflicts | notes
+
+  // ── AI Voice (TTS) state ──────────────────────────────────────────────────
+  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true);
+  const aiVoiceEnabledRef = useRef(true);
+  const factConflictCountRef = useRef(0); // tracks count for proactive question trigger
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [facts, setFacts] = useState([]);
   const [assumptions, setAssumptions] = useState([]);
@@ -34,6 +39,11 @@ export default function Room() {
   const [actionItems, setActionItems] = useState([]);
   const [conflicts, setConflicts] = useState([]);
   const [evidenceList, setEvidenceList] = useState([]);
+  const [aiResponses, setAiResponses] = useState([]);
+  const [roomNotes, setRoomNotes] = useState([]);
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteContent, setNoteContent] = useState("");
+  const [noteCategory, setNoteCategory] = useState("observation");
 
   // ── Evidence Inspector Drawer State ───────────────────────────────────────
   const [selectedItemForEvidence, setSelectedItemForEvidence] = useState(null);
@@ -133,6 +143,44 @@ export default function Room() {
   useEffect(() => {
     micMutedRef.current = micMuted;
   }, [micMuted]);
+
+  useEffect(() => {
+    aiVoiceEnabledRef.current = aiVoiceEnabled;
+  }, [aiVoiceEnabled]);
+
+  // ── AI TTS helper ─────────────────────────────────────────────────────────
+  function speakAiResponse(text, prefix = "AI Commander: ") {
+    if (!aiVoiceEnabledRef.current) return;
+    if (!window.speechSynthesis) return;
+    // Cancel any ongoing utterance
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(prefix + text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    // Prefer a neutral English voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferredVoice = voices.find(
+      (v) => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Microsoft"))
+    ) || voices.find((v) => v.lang.startsWith("en"));
+    if (preferredVoice) utterance.voice = preferredVoice;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function speakProactiveQuestion(context) {
+    const questions = [
+      `What is the current root cause of this issue?`,
+      `Has anyone confirmed whether the rollback is complete?`,
+      `Who is the owner of the most critical action item right now?`,
+      `Are there any dependencies we haven't accounted for yet?`,
+      `What is the blast radius if this issue is not resolved in the next 30 minutes?`,
+      `Has customer impact been quantified?`,
+      `Is there a known workaround available for affected users?`,
+      `What monitoring alerts triggered first, and have they been acknowledged?`,
+    ];
+    const q = questions[factConflictCountRef.current % questions.length];
+    speakAiResponse(q, "Important question: ");
+  }
 
   // ── Agora & Speech refs ───────────────────────────────────────────────────
   const clientRef = useRef(null);
@@ -274,6 +322,22 @@ export default function Room() {
           setActionItems(data.action_items || []);
           setConflicts(data.conflicts || []);
           setEvidenceList(data.evidence || []);
+          setAiResponses(data.ai_responses || []);
+        } else if (data.type === "ai_response_created" && data.ai_response) {
+          setAiResponses((prev) =>
+            prev.some((r) => r.id === data.ai_response.id)
+              ? prev
+              : [...prev, data.ai_response]
+          );
+          // Speak aloud for important AI responses
+          const r = data.ai_response;
+          if (["alert", "recommendation", "question"].includes(r.response_type)) {
+            speakAiResponse(r.response_text);
+          }
+        } else if (data.type === "note_created" && data.note) {
+          setRoomNotes((prev) =>
+            prev.some((n) => n.id === data.note.id) ? prev : [...prev, data.note]
+          );
         } else if (data.type === "transcript_segment") {
           setTranscriptSegments((prev) => {
             if (prev.some((s) => s.id === data.id || (s.start_ms === data.start_ms && s.text === data.text))) return prev;
@@ -282,6 +346,11 @@ export default function Room() {
         } else if (data.type === "fact_created" && data.item) {
           setFacts((prev) => (prev.some((f) => f.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
+          // Proactive question every 3rd fact
+          factConflictCountRef.current += 1;
+          if (factConflictCountRef.current % 3 === 0) {
+            setTimeout(() => speakProactiveQuestion(data.item.content), 2000);
+          }
         } else if (data.type === "assumption_created" && data.item) {
           setAssumptions((prev) => (prev.some((a) => a.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
@@ -294,8 +363,17 @@ export default function Room() {
         } else if (data.type === "conflict_created" && data.item) {
           setConflicts((prev) => (prev.some((c) => c.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
+          // Speak conflict alert
+          speakAiResponse(`Conflict detected: ${data.item.description}`, "Warning: ");
+          // Also counts toward proactive question
+          factConflictCountRef.current += 1;
+          if (factConflictCountRef.current % 3 === 0) {
+            setTimeout(() => speakProactiveQuestion(data.item.description), 3500);
+          }
         } else if (data.type === "pending_approval_created" && data.approval) {
           setApprovals((prev) => [data.approval, ...prev.filter((a) => a.id !== data.approval.id)]);
+          // Speak approval request
+          speakAiResponse(`Action requires approval: ${data.approval.title}`, "Approval needed: ");
         } else if (data.type === "approval_updated" && data.approval) {
           setApprovals((prev) => prev.map((a) => (a.id === data.approval.id ? { ...a, ...data.approval } : a)));
         }
@@ -724,6 +802,12 @@ export default function Room() {
               >
                 Approvals ({approvals.filter((a) => a.status === "pending").length})
               </button>
+              <button
+                className={`intel-tab ${activeTab === "notes" ? "intel-tab--active" : ""}`}
+                onClick={() => setActiveTab("notes")}
+              >
+                Notes ({roomNotes.length})
+              </button>
             </div>
 
             {/* Tab 7: Approvals Column */}
@@ -777,6 +861,115 @@ export default function Room() {
                             )}
                           </div>
                         )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* AI Commander tab removed — responses are surfaced via TTS */}
+
+            {/* Tab 9: Notes — quick note-taking during meeting */}
+            {activeTab === "notes" && (
+              <div className="transcript-feed">
+                {/* Quick add note form */}
+                <div style={{ padding: "0.75rem", borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem" }}>
+                    <select
+                      className="field-input"
+                      value={noteCategory}
+                      onChange={(e) => setNoteCategory(e.target.value)}
+                      style={{ fontSize: "0.75rem", padding: "0.3rem 0.5rem" }}
+                    >
+                      {["observation", "decision", "follow_up", "unresolved", "technical", "lesson_learned"].map((c) => (
+                        <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.4rem" }}>
+                    <input
+                      type="text"
+                      className="field-input"
+                      placeholder="Quick note…"
+                      value={noteContent}
+                      onChange={(e) => setNoteContent(e.target.value)}
+                      style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem" }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && noteContent.trim() && !savingNote) {
+                          e.preventDefault();
+                          setSavingNote(true);
+                          fetch(`${API}/meetings/${id}/notes`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "Incident Commander" }),
+                          })
+                            .then((r) => r.json())
+                            .then((n) => {
+                              setRoomNotes((prev) => [...prev, n]);
+                              setNoteContent("");
+                            })
+                            .catch(console.warn)
+                            .finally(() => setSavingNote(false));
+                        }
+                      }}
+                      id="room-note-input"
+                    />
+                    <button
+                      className="btn-primary"
+                      style={{ width: "auto", padding: "0.4rem 0.8rem", fontSize: "0.78rem" }}
+                      disabled={savingNote || !noteContent.trim()}
+                      id="room-note-save-btn"
+                      onClick={() => {
+                        if (!noteContent.trim()) return;
+                        setSavingNote(true);
+                        fetch(`${API}/meetings/${id}/notes`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "Incident Commander" }),
+                        })
+                          .then((r) => r.json())
+                          .then((n) => {
+                            setRoomNotes((prev) => [...prev, n]);
+                            setNoteContent("");
+                          })
+                          .catch(console.warn)
+                          .finally(() => setSavingNote(false));
+                      }}
+                    >
+                      {savingNote ? <span className="spinner" style={{ width: 12, height: 12 }} /> : "Add"}
+                    </button>
+                  </div>
+                  <p style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
+                    Press Enter to save
+                  </p>
+                </div>
+
+                {/* Notes list */}
+                {roomNotes.length === 0 ? (
+                  <div className="transcript-empty"><p>No notes yet. Add your first observation.</p></div>
+                ) : (
+                  [...roomNotes].reverse().map((n) => {
+                    const catColors = {
+                      observation: "#6366f1", decision: "#22c55e",
+                      follow_up: "#3b82f6", unresolved: "#ef4444",
+                      technical: "#8b5cf6", lesson_learned: "#f59e0b",
+                    };
+                    const c = catColors[n.category] || "#6366f1";
+                    return (
+                      <div key={n.id} className="intel-card" style={{ borderLeft: `3px solid ${c}` }}>
+                        <div className="intel-card-header">
+                          <span
+                            className="pill-badge"
+                            style={{ background: `${c}20`, color: c }}
+                          >
+                            {n.category.replace(/_/g, " ")}
+                          </span>
+                          <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>
+                            {n.author_name}
+                          </span>
+                        </div>
+                        <p className="intel-card-text">{n.content}</p>
                       </div>
                     );
                   })
@@ -986,6 +1179,33 @@ export default function Room() {
               </svg>
             )}
             {micMuted ? "Unmute" : "Mute"}
+          </button>
+
+          {/* AI Voice On/Off Toggle */}
+          <button
+            onClick={() => {
+              const next = !aiVoiceEnabled;
+              setAiVoiceEnabled(next);
+              if (!next && window.speechSynthesis) window.speechSynthesis.cancel();
+            }}
+            className={`btn-control ${!aiVoiceEnabled ? "btn-control--muted" : "btn-control--ai-voice"}`}
+            id="ai-voice-btn"
+            title={aiVoiceEnabled ? "Turn off AI voice" : "Turn on AI voice"}
+          >
+            {aiVoiceEnabled ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <line x1="23" y1="9" x2="17" y2="15" />
+                <line x1="17" y1="9" x2="23" y2="15" />
+              </svg>
+            )}
+            AI Voice {aiVoiceEnabled ? "On" : "Off"}
           </button>
 
           <div className="live-dot-wrap" aria-label="Connected">

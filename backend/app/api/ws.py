@@ -24,6 +24,7 @@ from app.models.evidence import Evidence
 from app.models.fact import Fact
 from app.models.participant import Participant
 from app.models.transcript_segment import TranscriptSegment
+from app.models.ai_response import AIResponse
 from app.ws.manager import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,15 @@ async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> No
                     select(Evidence).where(Evidence.meeting_id == m_uuid).order_by(Evidence.created_at.asc())
                 )
                 evidence_items = ev_res.scalars().all()
+
+                # 9. AI Responses
+                ai_resp_res = await db.execute(
+                    select(AIResponse)
+                    .where(AIResponse.meeting_id == m_uuid)
+                    .order_by(AIResponse.created_at.asc())
+                    .limit(100)
+                )
+                ai_responses = ai_resp_res.scalars().all()
 
                 full_history_payload = {
                     "type": "full_history",
@@ -179,6 +189,23 @@ async def websocket_live_transcript(websocket: WebSocket, meeting_id: str) -> No
                             "created_at": e.created_at.isoformat() if e.created_at else None,
                         }
                         for e in evidence_items
+                    ],
+                    "ai_responses": [
+                        {
+                            "id": str(r.id),
+                            "response_text": r.response_text,
+                            "response_type": r.response_type,
+                            "trigger": r.trigger,
+                            "related_fact_ids": r.related_fact_ids or [],
+                            "related_assumption_ids": r.related_assumption_ids or [],
+                            "related_action_ids": r.related_action_ids or [],
+                            "approval_status": r.approval_status,
+                            "approval_id": str(r.approval_id) if r.approval_id else None,
+                            "execution_status": r.execution_status,
+                            "confidence": r.confidence,
+                            "created_at": r.created_at.isoformat() if r.created_at else None,
+                        }
+                        for r in ai_responses
                     ],
                 }
                 await websocket.send_json(full_history_payload)

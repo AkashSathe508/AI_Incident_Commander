@@ -142,6 +142,22 @@ def detect_decisions_node(state: MeetingState) -> dict[str, Any]:
         items=extracted,
     )
 
+    # Store AI response for history
+    if new_decisions:
+        try:
+            from app.reasoning.ai_response_store import store_ai_response
+            dec_summary = "; ".join(d.get("content", "") for d in new_decisions[:2])
+            ai_text = f"Decision detected: {dec_summary}"
+            store_ai_response(
+                meeting_id=meeting_id,
+                response_text=ai_text,
+                response_type="recommendation",
+                trigger="decision_detected",
+                related_action_ids=[d.get("id") for d in new_decisions],
+            )
+        except Exception as _exc:
+            logger.debug("[DECISION DETECTION] AI response store failed: %s", _exc)
+
     return {"decisions": new_decisions, "evidence": new_evidence}
 
 

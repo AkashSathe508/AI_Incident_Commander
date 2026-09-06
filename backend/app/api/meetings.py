@@ -158,14 +158,11 @@ async def create_meeting(
     """
     Creates a new meeting and derives a unique Agora channel name from its UUID.
     Returns the meeting ID and a shareable channel identifier.
-    Integration config (Jira/Slack credentials) is stored as JSON for use when approving actions.
+    Integration config (Jira/Slack credentials) is stored in the dedicated JSONB column.
     """
-    import json as _json
     # Pre-generate UUID so the channel name can be computed before the INSERT
     meeting_id = uuid.uuid4()
     channel_name = f"room-{meeting_id}"
-
-    # Store integration_config as JSON in meeting.description (repurposed as metadata store)
     integration_meta = body.integration_config.model_dump()
 
     meeting = Meeting(
@@ -173,7 +170,7 @@ async def create_meeting(
         title=body.title,
         channel_name=channel_name,
         status="active",
-        description=_json.dumps({"integration_config": integration_meta}),
+        integration_config=integration_meta,  # dedicated JSONB column
     )
     db.add(meeting)
     await db.commit()
@@ -423,13 +420,8 @@ async def get_report(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dic
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
 
-    # If description is JSON string, parse it
-    report_meta = {}
-    if meeting.description:
-        try:
-            report_meta = json.loads(meeting.description)
-        except Exception:
-            report_meta = {"executive_summary": meeting.description, "unresolved_questions": []}
+    # Read from the dedicated summary column (not description)
+    executive_summary = meeting.summary or f"Incident response report for {meeting.title}"
 
     # Fetch facts, decisions, action items, conflicts, risks, timeline
     from app.models.fact import Fact
@@ -444,16 +436,23 @@ async def get_report(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dic
     act_res = await db.execute(select(ActionItem).where(ActionItem.meeting_id == meeting_uuid))
     conf_res = await db.execute(select(Conflict).where(Conflict.meeting_id == meeting_uuid))
     risk_res = await db.execute(select(Risk).where(Risk.meeting_id == meeting_uuid))
-    time_res = await db.execute(select(TimelineEvent).where(TimelineEvent.meeting_id == meeting_uuid).order_by(TimelineEvent.occurred_at.asc()))
+    time_res = await db.execute(
+        select(TimelineEvent)
+        .where(TimelineEvent.meeting_id == meeting_uuid)
+        .order_by(TimelineEvent.occurred_at.asc())
+    )
 
     return {
         "meeting_id": meeting_id,
         "title": meeting.title,
         "status": meeting.status,
+        "incident_severity": meeting.incident_severity,
+        "root_cause_status": meeting.root_cause_status,
+        "resolution_status": meeting.resolution_status,
         "created_at": meeting.created_at.isoformat() if meeting.created_at else None,
         "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
-        "executive_summary": report_meta.get("executive_summary", f"Incident response report for {meeting.title}"),
-        "unresolved_questions": report_meta.get("unresolved_questions", []),
+        "executive_summary": executive_summary,
+        "unresolved_questions": [],
         "facts": [{"id": str(f.id), "content": f.content, "confidence": f.confidence} for f in facts_res.scalars().all()],
         "decisions": [{"id": str(d.id), "content": d.content, "rationale": d.rationale} for d in dec_res.scalars().all()],
         "action_items": [{"id": str(a.id), "description": a.description, "due_date": str(a.due_date) if a.due_date else None, "status": a.status} for a in act_res.scalars().all()],
@@ -764,12 +763,15 @@ async def approve_action(meeting_id: str, approval_id: str, db: AsyncSession = D
     action_type = approval.action_type
     payload = approval.payload or {}
 
-    # Load per-session integration config from meeting metadata
-    import json as _json
+    # Load per-session integration config from dedicated JSONB column
     meeting_result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
     the_meeting = meeting_result.scalar_one_or_none()
     integration_cfg: dict = {}
-    if the_meeting and the_meeting.description:
+    if the_meeting and the_meeting.integration_config:
+        integration_cfg = the_meeting.integration_config
+    elif the_meeting and the_meeting.description:
+        # Fallback: legacy meetings stored config in description
+        import json as _json
         try:
             meta = _json.loads(the_meeting.description)
             integration_cfg = meta.get("integration_config", {})
@@ -875,6 +877,299 @@ async def reject_action(meeting_id: str, approval_id: str, db: AsyncSession = De
         "approval_id": approval_id,
         "status": "rejected",
     }
+
+
+# ── New: List Meetings endpoint ──────────────────────────────────────────────
+
+
+@router.get(
+    "",
+    summary="List all meetings",
+)
+async def list_meetings(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Returns all meetings ordered by creation date descending."""
+    from sqlalchemy import desc
+    from app.models.fact import Fact
+    from app.models.action_item import ActionItem
+    from app.models.participant import Participant as Part
+
+    result = await db.execute(
+        select(Meeting).order_by(desc(Meeting.created_at)).limit(limit).offset(offset)
+    )
+    meetings = result.scalars().all()
+
+    items = []
+    for m in meetings:
+        # Count participants
+        p_count = await db.execute(
+            select(func.count()).where(Part.meeting_id == m.id)
+        )
+        pc = p_count.scalar() or 0
+
+        # Count open actions
+        a_count = await db.execute(
+            select(func.count()).where(
+                ActionItem.meeting_id == m.id,
+                ActionItem.status == "open",
+            )
+        )
+        ac = a_count.scalar() or 0
+
+        items.append({
+            "id": str(m.id),
+            "title": m.title,
+            "status": m.status,
+            "incident_severity": m.incident_severity,
+            "root_cause_status": m.root_cause_status,
+            "resolution_status": m.resolution_status,
+            "channel_name": m.channel_name,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "started_at": m.started_at.isoformat() if m.started_at else None,
+            "ended_at": m.ended_at.isoformat() if m.ended_at else None,
+            "summary": m.summary,
+            "participant_count": pc,
+            "open_action_count": ac,
+        })
+
+    return {"meetings": items, "total": len(items)}
+
+
+# ── New: AI Responses endpoint ────────────────────────────────────────────────
+
+
+@router.get(
+    "/{meeting_id}/ai-responses",
+    summary="Get AI Incident Commander response history for a meeting",
+)
+async def get_ai_responses(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """Returns all AI-generated responses for a meeting, ordered chronologically."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    from app.models.ai_response import AIResponse
+    from sqlalchemy import asc
+
+    stmt = (
+        select(AIResponse)
+        .where(AIResponse.meeting_id == meeting_uuid)
+        .order_by(asc(AIResponse.created_at))
+    )
+    res = await db.execute(stmt)
+    responses = res.scalars().all()
+
+    return {
+        "meeting_id": meeting_id,
+        "ai_responses": [
+            {
+                "id": str(r.id),
+                "response_text": r.response_text,
+                "response_type": r.response_type,
+                "trigger": r.trigger,
+                "related_fact_ids": r.related_fact_ids or [],
+                "related_assumption_ids": r.related_assumption_ids or [],
+                "related_action_ids": r.related_action_ids or [],
+                "approval_status": r.approval_status,
+                "approval_id": str(r.approval_id) if r.approval_id else None,
+                "execution_status": r.execution_status,
+                "jira_ticket_ref": r.jira_ticket_ref,
+                "confidence": r.confidence,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in responses
+        ],
+    }
+
+
+# ── New: Meeting Notes endpoints ──────────────────────────────────────────────
+
+
+class CreateNoteRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
+    author_name: str = Field(default="Incident Commander", max_length=100)
+    category: str = Field(default="observation", max_length=50)
+
+
+class UpdateNoteRequest(BaseModel):
+    content: str | None = Field(default=None, max_length=5000)
+    category: str | None = Field(default=None, max_length=50)
+
+
+@router.post(
+    "/{meeting_id}/notes",
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a note to a meeting",
+)
+async def create_note(meeting_id: str, body: CreateNoteRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    """Creates a new note (observation, decision, follow-up, etc.) for a meeting."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    from app.models.meeting_note import MeetingNote
+    note = MeetingNote(
+        meeting_id=meeting_uuid,
+        author_name=body.author_name,
+        content=body.content,
+        category=body.category,
+    )
+    db.add(note)
+    await db.commit()
+    await db.refresh(note)
+
+    note_dict = {
+        "id": str(note.id),
+        "meeting_id": meeting_id,
+        "author_name": note.author_name,
+        "content": note.content,
+        "category": note.category,
+        "created_at": note.created_at.isoformat() if note.created_at else None,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }
+
+    # Broadcast via WebSocket
+    from app.ws.manager import ws_manager
+    await ws_manager.broadcast(meeting_id, {"type": "note_created", "note": note_dict})
+
+    return note_dict
+
+
+@router.get(
+    "/{meeting_id}/notes",
+    summary="List all notes for a meeting",
+)
+async def list_notes(meeting_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """Returns all notes for a meeting ordered by creation time."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    from app.models.meeting_note import MeetingNote
+    from sqlalchemy import asc
+
+    stmt = select(MeetingNote).where(MeetingNote.meeting_id == meeting_uuid).order_by(asc(MeetingNote.created_at))
+    res = await db.execute(stmt)
+    notes = res.scalars().all()
+
+    return {
+        "meeting_id": meeting_id,
+        "notes": [
+            {
+                "id": str(n.id),
+                "author_name": n.author_name,
+                "content": n.content,
+                "category": n.category,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+                "updated_at": n.updated_at.isoformat() if n.updated_at else None,
+            }
+            for n in notes
+        ],
+    }
+
+
+@router.put(
+    "/{meeting_id}/notes/{note_id}",
+    summary="Edit a meeting note",
+)
+async def update_note(
+    meeting_id: str,
+    note_id: str,
+    body: UpdateNoteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Updates the content or category of an existing note."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+        note_uuid = uuid.UUID(note_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format")
+
+    from app.models.meeting_note import MeetingNote
+    stmt = select(MeetingNote).where(
+        MeetingNote.id == note_uuid,
+        MeetingNote.meeting_id == meeting_uuid,
+    )
+    res = await db.execute(stmt)
+    note = res.scalar_one_or_none()
+
+    if note is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+
+    if body.content is not None:
+        note.content = body.content
+    if body.category is not None:
+        note.category = body.category
+
+    await db.commit()
+    await db.refresh(note)
+
+    return {
+        "id": str(note.id),
+        "author_name": note.author_name,
+        "content": note.content,
+        "category": note.category,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }
+
+
+@router.delete(
+    "/{meeting_id}/notes/{note_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a meeting note",
+)
+async def delete_note(meeting_id: str, note_id: str, db: AsyncSession = Depends(get_db)) -> None:
+    """Deletes a note from a meeting."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+        note_uuid = uuid.UUID(note_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format")
+
+    from app.models.meeting_note import MeetingNote
+    stmt = select(MeetingNote).where(
+        MeetingNote.id == note_uuid,
+        MeetingNote.meeting_id == meeting_uuid,
+    )
+    res = await db.execute(stmt)
+    note = res.scalar_one_or_none()
+
+    if note is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+
+    await db.delete(note)
+    await db.commit()
+
+
+# ── New: Previous Context endpoint ────────────────────────────────────────────
+
+
+@router.get(
+    "/{meeting_id}/context",
+    summary="Get relevant context from previous meetings about the same incident",
+)
+async def get_meeting_context(meeting_id: str) -> dict:
+    """
+    Returns a compact cross-meeting context object built from previously ended meetings
+    with a similar title. This enables continuity across related incident meetings.
+    """
+    try:
+        uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid meeting_id")
+
+    try:
+        from app.reasoning.context_retriever import retrieve_relevant_context
+        return retrieve_relevant_context(meeting_id)
+    except Exception as exc:
+        logger.warning("Context retrieval failed: %s", exc)
+        return {"has_context": False, "related_meetings": []}
 
 
 def _is_valid_uuid(val: str) -> bool:

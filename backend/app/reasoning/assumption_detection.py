@@ -125,6 +125,22 @@ def detect_assumptions_node(state: MeetingState) -> dict[str, Any]:
         items=extracted,
     )
 
+    # Store AI response for history
+    if new_assumptions:
+        try:
+            from app.reasoning.ai_response_store import store_ai_response
+            hyp_summary = "; ".join(a.get("content", "") for a in new_assumptions[:2])
+            ai_text = f"Identified {len(new_assumptions)} hypothesis/assumption(s): {hyp_summary}"
+            store_ai_response(
+                meeting_id=meeting_id,
+                response_text=ai_text,
+                response_type="analysis",
+                trigger="hypothesis_detected",
+                related_assumption_ids=[a.get("id") for a in new_assumptions],
+            )
+        except Exception as _exc:
+            logger.debug("[ASSUMPTION DETECTION] AI response store failed: %s", _exc)
+
     return {"assumptions": new_assumptions, "evidence": new_evidence}
 
 
