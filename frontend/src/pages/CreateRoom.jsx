@@ -113,7 +113,7 @@ export default function CreateRoom() {
           </svg>
         </div>
 
-        <h1 className="create-heading">Incident Commander</h1>
+        <h1 className="create-heading">SentinelAI</h1>
         <p className="create-sub">
           Start a secure, real-time voice room for your team.
         </p>

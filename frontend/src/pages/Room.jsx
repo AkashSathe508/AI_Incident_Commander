@@ -32,6 +32,12 @@ export default function Room() {
   const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true);
   const aiVoiceEnabledRef = useRef(true);
   const factConflictCountRef = useRef(0); // tracks count for proactive question trigger
+  const [voicedQuestion, setVoicedQuestion] = useState(null); // currently spoken question text
+  const voicedQuestionTimerRef = useRef(null);
+  // live state refs for access inside WS closure
+  const factsRef = useRef([]);
+  const decisionsRef = useRef([]);
+  const actionItemsRef = useRef([]);
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [facts, setFacts] = useState([]);
   const [assumptions, setAssumptions] = useState([]);
@@ -44,6 +50,8 @@ export default function Room() {
   const [savingNote, setSavingNote] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   const [noteCategory, setNoteCategory] = useState("observation");
+  const [slackTestStatus, setSlackTestStatus] = useState(null); // null | 'testing' | 'ok' | 'error'
+  const [slackTestMsg, setSlackTestMsg] = useState("");
 
   // ── Evidence Inspector Drawer State ───────────────────────────────────────
   const [selectedItemForEvidence, setSelectedItemForEvidence] = useState(null);
@@ -149,16 +157,14 @@ export default function Room() {
   }, [aiVoiceEnabled]);
 
   // ── AI TTS helper ─────────────────────────────────────────────────────────
-  function speakAiResponse(text, prefix = "AI Commander: ") {
+  function speakAiResponse(text, prefix = "") {
     if (!aiVoiceEnabledRef.current) return;
     if (!window.speechSynthesis) return;
-    // Cancel any ongoing utterance
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(prefix + text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
+    utterance.rate = 0.95;
+    utterance.pitch = 1.05;
     utterance.volume = 1.0;
-    // Prefer a neutral English voice if available
     const voices = window.speechSynthesis.getVoices();
     const preferredVoice = voices.find(
       (v) => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Microsoft"))
@@ -167,19 +173,71 @@ export default function Room() {
     window.speechSynthesis.speak(utterance);
   }
 
-  function speakProactiveQuestion(context) {
-    const questions = [
-      `What is the current root cause of this issue?`,
-      `Has anyone confirmed whether the rollback is complete?`,
-      `Who is the owner of the most critical action item right now?`,
-      `Are there any dependencies we haven't accounted for yet?`,
-      `What is the blast radius if this issue is not resolved in the next 30 minutes?`,
-      `Has customer impact been quantified?`,
-      `Is there a known workaround available for affected users?`,
-      `What monitoring alerts triggered first, and have they been acknowledged?`,
+  // Generate a context-aware question from real meeting facts and decisions
+  function generateContextualQuestion() {
+    const allFacts = factsRef.current;
+    const allDecisions = decisionsRef.current;
+    const allActions = actionItemsRef.current;
+
+    // Build context-aware questions from actual data
+    const questions = [];
+
+    // Decision-based follow-ups (highest priority)
+    allDecisions.forEach((d) => {
+      const text = d.content || d.description || "";
+      if (text) {
+        if (/rollback|revert|undeploy/i.test(text))
+          questions.push(`Has the rollback been confirmed as complete? — Referenced decision: "${text.slice(0, 80)}".`);
+        else if (/deploy|release|push|hotfix/i.test(text))
+          questions.push(`Has the deployment gone out successfully and is it verified in production? — Decision: "${text.slice(0, 80)}".`);
+        else if (/assign|owner|escalate/i.test(text))
+          questions.push(`Who is following up on this? — Decision: "${text.slice(0, 80)}". Can the owner confirm status?`);
+        else
+          questions.push(`Has this decision been actioned yet? — "${text.slice(0, 80)}". Can someone confirm?`);
+      }
+    });
+
+    // Action-item follow-ups
+    allActions.forEach((a) => {
+      const desc = a.description || "";
+      const assignee = a.assignee_name || "the assignee";
+      if (desc)
+        questions.push(`${assignee}, can you give a status update on: "${desc.slice(0, 80)}"?`);
+    });
+
+    // Fact-based probing questions
+    allFacts.slice(-3).forEach((f) => {
+      const text = f.content || "";
+      if (/error|failure|crash|exception|down|outage/i.test(text))
+        questions.push(`We noted: "${text.slice(0, 80)}" — has this been resolved or is it still active?`);
+      else if (/customer|user|impact/i.test(text))
+        questions.push(`Regarding "${text.slice(0, 80)}" — has customer impact been quantified and are they being notified?`);
+    });
+
+    // SentinelAI fallback questions
+    const fallbacks = [
+      "Is the issue fully resolved, or are we still in mitigation mode?",
+      "Does everyone have a clear next action? If not, let's assign one now.",
+      "Has root cause been identified? If not, who is leading the investigation?",
+      "Are there any blockers that need immediate escalation?",
+      "What is the estimated time to resolution?",
+      "Has the on-call runbook been followed? Are there any gaps?",
+      "Are monitoring dashboards showing recovery? Can someone share a screenshot?",
     ];
-    const q = questions[factConflictCountRef.current % questions.length];
-    speakAiResponse(q, "Important question: ");
+
+    const pool = questions.length > 0 ? questions : fallbacks;
+    const q = pool[factConflictCountRef.current % pool.length];
+    return q;
+  }
+
+  function speakProactiveQuestion() {
+    const q = generateContextualQuestion();
+    // Show the question as a toast
+    setVoicedQuestion(q);
+    if (voicedQuestionTimerRef.current) clearTimeout(voicedQuestionTimerRef.current);
+    voicedQuestionTimerRef.current = setTimeout(() => setVoicedQuestion(null), 18000);
+    // Speak it aloud as SentinelAI
+    speakAiResponse(q, "SentinelAI: ");
   }
 
   // ── Agora & Speech refs ───────────────────────────────────────────────────
@@ -297,6 +355,25 @@ export default function Room() {
     }
   }
 
+  async function testSlackIntegration() {
+    setSlackTestStatus("testing");
+    setSlackTestMsg("");
+    try {
+      const res = await fetch(`${API}/meetings/${id}/test-slack`, { method: "POST" });
+      const data = await res.json();
+      if (data.status === "posted") {
+        setSlackTestStatus("ok");
+        setSlackTestMsg(data.mock ? "✅ Mock mode — no Slack credentials configured, but pipeline is functional." : `✅ Message sent to ${data.channel}!`);
+      } else {
+        setSlackTestStatus("error");
+        setSlackTestMsg(`❌ Slack error: ${data.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      setSlackTestStatus("error");
+      setSlackTestMsg(`❌ Request failed: ${err.message}`);
+    }
+  }
+
   // ── WebSocket live transcript & intelligence stream ───────────────────────
   useEffect(() => {
     if (phase !== "live") return;
@@ -315,11 +392,15 @@ export default function Room() {
         const data = JSON.parse(event.data);
 
         if (data.type === "full_history") {
-          setTranscriptSegments(data.segments || []);
-          setFacts(data.facts || []);
+          const segs = data.segments || [];
+          const f = data.facts || [];
+          const dec = data.decisions || [];
+          const acts = data.action_items || [];
+          setTranscriptSegments(segs);
+          setFacts(f); factsRef.current = f;
           setAssumptions(data.assumptions || []);
-          setDecisions(data.decisions || []);
-          setActionItems(data.action_items || []);
+          setDecisions(dec); decisionsRef.current = dec;
+          setActionItems(acts); actionItemsRef.current = acts;
           setConflicts(data.conflicts || []);
           setEvidenceList(data.evidence || []);
           setAiResponses(data.ai_responses || []);
@@ -329,10 +410,13 @@ export default function Room() {
               ? prev
               : [...prev, data.ai_response]
           );
-          // Speak aloud for important AI responses
+          // Only speak question-type AI responses aloud
           const r = data.ai_response;
-          if (["alert", "recommendation", "question"].includes(r.response_type)) {
-            speakAiResponse(r.response_text);
+          if (r.response_type === "question") {
+            setVoicedQuestion(r.response_text);
+            if (voicedQuestionTimerRef.current) clearTimeout(voicedQuestionTimerRef.current);
+            voicedQuestionTimerRef.current = setTimeout(() => setVoicedQuestion(null), 18000);
+            speakAiResponse(r.response_text, "Question: ");
           }
         } else if (data.type === "note_created" && data.note) {
           setRoomNotes((prev) =>
@@ -344,36 +428,49 @@ export default function Room() {
             return [...prev, data];
           });
         } else if (data.type === "fact_created" && data.item) {
-          setFacts((prev) => (prev.some((f) => f.id === data.item.id) ? prev : [...prev, data.item]));
+          setFacts((prev) => {
+            const updated = prev.some((f) => f.id === data.item.id) ? prev : [...prev, data.item];
+            factsRef.current = updated;
+            return updated;
+          });
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
           // Proactive question every 3rd fact
           factConflictCountRef.current += 1;
           if (factConflictCountRef.current % 3 === 0) {
-            setTimeout(() => speakProactiveQuestion(data.item.content), 2000);
+            setTimeout(() => speakProactiveQuestion(), 2500);
           }
         } else if (data.type === "assumption_created" && data.item) {
           setAssumptions((prev) => (prev.some((a) => a.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
         } else if (data.type === "decision_created" && data.item) {
-          setDecisions((prev) => (prev.some((d) => d.id === data.item.id) ? prev : [...prev, data.item]));
+          setDecisions((prev) => {
+            const updated = prev.some((d) => d.id === data.item.id) ? prev : [...prev, data.item];
+            decisionsRef.current = updated;
+            return updated;
+          });
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
+          // Every new decision triggers an immediate follow-up question
+          setTimeout(() => {
+            factConflictCountRef.current += 1;
+            speakProactiveQuestion();
+          }, 3000);
         } else if (data.type === "action_item_created" && data.item) {
-          setActionItems((prev) => (prev.some((ai) => ai.id === data.item.id) ? prev : [...prev, data.item]));
+          setActionItems((prev) => {
+            const updated = prev.some((ai) => ai.id === data.item.id) ? prev : [...prev, data.item];
+            actionItemsRef.current = updated;
+            return updated;
+          });
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
         } else if (data.type === "conflict_created" && data.item) {
           setConflicts((prev) => (prev.some((c) => c.id === data.item.id) ? prev : [...prev, data.item]));
           if (data.evidence?.length) setEvidenceList((prev) => [...prev, ...data.evidence]);
-          // Speak conflict alert
-          speakAiResponse(`Conflict detected: ${data.item.description}`, "Warning: ");
-          // Also counts toward proactive question
-          factConflictCountRef.current += 1;
-          if (factConflictCountRef.current % 3 === 0) {
-            setTimeout(() => speakProactiveQuestion(data.item.description), 3500);
-          }
         } else if (data.type === "pending_approval_created" && data.approval) {
           setApprovals((prev) => [data.approval, ...prev.filter((a) => a.id !== data.approval.id)]);
-          // Speak approval request
-          speakAiResponse(`Action requires approval: ${data.approval.title}`, "Approval needed: ");
+          // SentinelAI announces approval requests aloud — most critical TTS
+          speakAiResponse(
+            `${data.approval.title}. Please review and approve or reject this action in the Approvals tab.`,
+            "SentinelAI, action required: "
+          );
         } else if (data.type === "approval_updated" && data.approval) {
           setApprovals((prev) => prev.map((a) => (a.id === data.approval.id ? { ...a, ...data.approval } : a)));
         }
@@ -586,7 +683,7 @@ export default function Room() {
             <p className="room-header-sub">
               {phase === "live"
                 ? `${participants.length} participant${participants.length !== 1 ? "s" : ""} · Live`
-                : "Incident Commander"}
+                : "SentinelAI"}
             </p>
           </div>
         </div>
@@ -813,6 +910,23 @@ export default function Room() {
             {/* Tab 7: Approvals Column */}
             {activeTab === "approvals" && (
               <div className="transcript-feed">
+                {/* Slack integration test */}
+                <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Slack Integration</span>
+                  <button
+                    className="btn-primary"
+                    style={{ padding: "0.2rem 0.65rem", fontSize: "0.72rem", width: "auto", background: slackTestStatus === "ok" ? "#16a34a" : slackTestStatus === "error" ? "#dc2626" : "#1d4ed8" }}
+                    onClick={testSlackIntegration}
+                    disabled={slackTestStatus === "testing"}
+                    id="slack-test-btn"
+                  >
+                    {slackTestStatus === "testing" ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Testing…</> : "🔌 Test Slack"}
+                  </button>
+                  {slackTestMsg && (
+                    <span style={{ fontSize: "0.73rem", color: slackTestStatus === "ok" ? "#4ade80" : "#f87171" }}>{slackTestMsg}</span>
+                  )}
+                </div>
+
                 {approvals.length === 0 ? (
                   <div className="transcript-empty"><p>No pending external action approvals. Everything clear!</p></div>
                 ) : (
@@ -825,6 +939,11 @@ export default function Room() {
                           <span className="pill-badge" style={{ color: appr.status === "pending" ? "#eab308" : appr.status === "approved" ? "#22c55e" : "#ef4444" }}>
                             {appr.status.toUpperCase()}
                           </span>
+                          {appr.status === "pending" && (
+                            <span style={{ fontSize: "0.68rem", color: "#a5b4fc", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                              🔊 Announced aloud
+                            </span>
+                          )}
                         </div>
                         <p className="intel-card-text" style={{ fontWeight: 600 }}>{appr.title}</p>
                         {appr.description && <p className="intel-card-sub" style={{ whiteSpace: "pre-wrap" }}>{appr.description}</p>}
@@ -868,7 +987,7 @@ export default function Room() {
               </div>
             )}
 
-            {/* AI Commander tab removed — responses are surfaced via TTS */}
+            {/* SentinelAI tab removed — responses are surfaced via TTS */}
 
             {/* Tab 9: Notes — quick note-taking during meeting */}
             {activeTab === "notes" && (
@@ -902,7 +1021,7 @@ export default function Room() {
                           fetch(`${API}/meetings/${id}/notes`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "Incident Commander" }),
+                            body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "SentinelAI" }),
                           })
                             .then((r) => r.json())
                             .then((n) => {
@@ -926,7 +1045,7 @@ export default function Room() {
                         fetch(`${API}/meetings/${id}/notes`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "Incident Commander" }),
+                          body: JSON.stringify({ content: noteContent, category: noteCategory, author_name: "SentinelAI" }),
                         })
                           .then((r) => r.json())
                           .then((n) => {
@@ -980,6 +1099,20 @@ export default function Room() {
             {/* Tab 1: Live Transcript Feed */}
             {activeTab === "transcript" && (
               <div className="transcript-feed" ref={transcriptFeedRef}>
+                {/* SentinelAI Voiced Question Toast */}
+                {voicedQuestion && (
+                  <div className="voiced-question-toast">
+                    <span className="voiced-question-icon">🎙️</span>
+                    <div>
+                      <p className="voiced-question-label">SentinelAI is asking:</p>
+                      <p className="voiced-question-text">{voicedQuestion}</p>
+                    </div>
+                    <button
+                      className="voiced-question-dismiss"
+                      onClick={() => { setVoicedQuestion(null); if (window.speechSynthesis) window.speechSynthesis.cancel(); }}
+                    >✕</button>
+                  </div>
+                )}
                 {transcriptSegments.length === 0 ? (
                   <div className="transcript-empty">
                     <p>Listening for spoken audio…</p>

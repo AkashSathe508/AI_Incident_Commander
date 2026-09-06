@@ -150,7 +150,7 @@ export default function Report() {
           <div className="room-logo-dot" style={{ background: "#6366f1" }} aria-hidden="true" />
           <div>
             <p className="room-header-title">{report.title} — Post-Incident Report</p>
-            <p className="room-header-sub">Status: {report.status.toUpperCase()} · AI Incident Commander</p>
+            <p className="room-header-sub">Status: {report.status.toUpperCase()} · SentinelAI</p>
           </div>
         </div>
         <div style={{ display: "flex", gap: "1rem" }} className="hide-on-print">
@@ -196,7 +196,7 @@ export default function Report() {
 
           {qaResult && (
             <div className="qa-answer-card">
-              <span className="qa-answer-title">🤖 AI Commander Answer</span>
+              <span className="qa-answer-title">🤖 SentinelAI Answer</span>
               <p className="qa-answer-text">{qaResult.answer}</p>
 
               {qaResult.citations?.length > 0 && (

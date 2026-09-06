@@ -260,6 +260,46 @@ async def join_meeting(
 
 
 @router.post(
+    "/{meeting_id}/test-slack",
+    summary="Test Slack integration for this meeting",
+)
+async def test_slack_integration(
+    meeting_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Sends a test message to Slack using the integration credentials stored for this meeting
+    (or falls back to the global .env settings). Returns the raw Slack tool response so the
+    frontend can display the result to the operator.
+    """
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid meeting_id UUID")
+
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    config = meeting.integration_config or {}
+
+    from app.reasoning.integrations.slack_tool import post_slack_message
+    test_msg = (
+        "\U0001F7E2 *SentinelAI \u2014 Slack Integration Test*\n"
+        f"Connectivity verified for meeting: *{meeting.title}*. "
+        "SentinelAI will post incident alerts and conflict notifications here."
+    )
+    response = post_slack_message(
+        message=test_msg,
+        channel=config.get("slack_channel") or None,
+        webhook_url=config.get("slack_webhook_url") or None,
+        bot_token=config.get("slack_bot_token") or None,
+    )
+    return response
+
+
+@router.post(
     "/{meeting_id}/agent/start",
     response_model=AgentStartResponse,
     summary="Manually start the AI agent for a meeting",

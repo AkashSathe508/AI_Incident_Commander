@@ -60,7 +60,7 @@ export default function MeetingDetail() {
   // Notes form
   const [noteContent, setNoteContent] = useState("");
   const [noteCategory, setNoteCategory] = useState("observation");
-  const [noteAuthor, setNoteAuthor] = useState("Incident Commander");
+  const [noteAuthor, setNoteAuthor] = useState("SentinelAI");
   const [savingNote, setSavingNote] = useState(false);
   const [editingNote, setEditingNote] = useState(null);
   const noteInputRef = useRef(null);
@@ -180,7 +180,7 @@ export default function MeetingDetail() {
 
   const TABS = [
     { id: "overview", label: "Overview" },
-    { id: "ai_commander", label: `AI Commander (${aiResponses.length})` },
+    { id: "ai_commander", label: `SentinelAI (${aiResponses.length})` },
     { id: "intelligence", label: "Intelligence" },
     { id: "actions", label: `Actions (${report.action_items?.length || 0})` },
     { id: "notes", label: `Notes (${notes.length})` },
@@ -298,7 +298,7 @@ export default function MeetingDetail() {
             {/* AI Summary */}
             {report.executive_summary && (
               <div className="detail-section">
-                <SectionHeader title="AI-Generated Summary" accent="#6366f1" />
+                <SectionHeader title="SentinelAI Summary" accent="#6366f1" />
                 <div className="detail-summary-card">
                   <pre className="detail-summary-text">{report.executive_summary}</pre>
                 </div>
@@ -384,11 +384,11 @@ export default function MeetingDetail() {
           </div>
         )}
 
-        {/* ── AI Commander ─────────────────────────── */}
+        {/* ── SentinelAI ───────────────────────────────────── */}
         {activeTab === "ai_commander" && (
           <div className="detail-tab-content">
             <SectionHeader
-              title="AI Incident Commander — Response History"
+              title="SentinelAI — Response History"
               count={aiResponses.length}
               accent="#6366f1"
             />

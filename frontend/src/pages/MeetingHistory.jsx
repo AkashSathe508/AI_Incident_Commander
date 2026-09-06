@@ -117,7 +117,7 @@ export default function MeetingHistory() {
           <div>
             <h1 className="hist-title">Incident History</h1>
             <p className="hist-sub">
-              {meetings.length} incidents recorded · AI Incident Commander
+              {meetings.length} incidents recorded · SentinelAI
             </p>
           </div>
         </div>

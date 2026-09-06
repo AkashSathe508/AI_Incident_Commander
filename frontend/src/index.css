@@ -2218,3 +2218,67 @@ body {
 
 @media print { .hide-on-print { display: none !important; } }
 
+/* ── Voiced Question Toast \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+.voiced-question-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: linear-gradient(135deg, rgba(99,102,241,0.18) 0%, rgba(139,92,246,0.14) 100%);
+  border: 1px solid rgba(99,102,241,0.4);
+  border-radius: 12px;
+  padding: 0.75rem 0.9rem;
+  margin: 0.6rem 0.6rem 0.2rem;
+  animation: toast-in 0.3s ease-out;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.voiced-question-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.voiced-question-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #a5b4fc;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.2rem;
+}
+
+.voiced-question-text {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #e2e8f0;
+  line-height: 1.45;
+}
+
+.voiced-question-dismiss {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.55rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.15rem 0.3rem;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.voiced-question-dismiss:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.1);
+}
+
+
