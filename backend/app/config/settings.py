@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     enable_spoken_summaries: bool = True
     spoken_summary_interval: int = 180
+    
+    # ── Sentinel Preferences ─────────────────────────────────────────────────────
+    default_mode: str = "occasional"  # "frequent" or "occasional"
+    enable_mute_control: bool = True
+    
 
     # Optional external action integrations; mocked when unset.
     slack_webhook_url: str = ""

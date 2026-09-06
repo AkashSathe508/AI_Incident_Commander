@@ -35,3 +35,13 @@ class MeetingState(TypedDict):
     timeline_events: Annotated[list[dict[str, Any]], add_items]
     risks: Annotated[list[dict[str, Any]], add_items]
     evidence: Annotated[list[dict[str, Any]], add_items]
+
+    # Sentinel mode and mute control
+    mode: Annotated[str, add_items] = []  # "frequent" or "occasional"
+    muted: Annotated[bool, add_items] = []
+    # Tracking additional incident state
+    pending_questions: Annotated[list[dict[str, Any]], add_items] = []
+    approved_actions: Annotated[list[dict[str, Any]], add_items] = []
+    completed_actions: Annotated[list[dict[str, Any]], add_items] = []
+    unresolved_actions: Annotated[list[dict[str, Any]], add_items] = []
+    timeline: Annotated[list[dict[str, Any]], add_items] = []

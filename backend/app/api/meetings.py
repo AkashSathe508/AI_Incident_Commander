@@ -402,6 +402,74 @@ async def get_meeting(
         ],
     )
 
+# --- Mode and Mute Endpoints ---
+
+class ModeUpdateRequest(BaseModel):
+    mode: str = Field(..., description="Sentinel mode: 'frequent' or 'occasional'")
+
+class MuteUpdateRequest(BaseModel):
+    muted: bool = Field(..., description="Mute flag for Sentinel audio output")
+
+@router.post(
+    "/{meeting_id}/mode",
+    response_model=MeetingInfoResponse,
+    summary="Set Sentinel mode for a meeting",
+)
+async def set_mode(
+    meeting_id: str,
+    payload: ModeUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MeetingInfoResponse:
+    """Update the meeting's default_mode field."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid meeting_id")
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if payload.mode not in {"frequent", "occasional"}:
+        raise HTTPException(status_code=400, detail="Invalid mode value")
+    meeting.default_mode = payload.mode
+    await db.commit()
+    return MeetingInfoResponse(
+        meeting_id=str(meeting.id),
+        title=meeting.title,
+        channel_name=meeting.channel_name,
+        status=meeting.status,
+        participants=[],
+    )
+
+@router.post(
+    "/{meeting_id}/mute",
+    response_model=MeetingInfoResponse,
+    summary="Toggle Sentinel mute state for a meeting",
+)
+async def set_mute(
+    meeting_id: str,
+    payload: MuteUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MeetingInfoResponse:
+    """Update the meeting's is_muted flag."""
+    try:
+        meeting_uuid = uuid.UUID(meeting_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid meeting_id")
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    meeting.is_muted = payload.muted
+    await db.commit()
+    return MeetingInfoResponse(
+        meeting_id=str(meeting.id),
+        title=meeting.title,
+        channel_name=meeting.channel_name,
+        status=meeting.status,
+        participants=[],
+    )
+
 
 @router.post(
     "/{meeting_id}/end",

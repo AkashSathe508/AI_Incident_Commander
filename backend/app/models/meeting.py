@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Index, String, Text
+from sqlalchemy import Index, String, Text, Boolean
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,10 @@ class Meeting(Base):
     resolution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Integration credentials stored as JSONB (replaces the repurposed description field)
     integration_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Mode: "frequent" or "occasional"
+    default_mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="frequent")
+    # Muted flag controls audio output
+    is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Relationships ─────────────────────────────────────────────────────────
     participants: Mapped[list["Participant"]] = relationship(

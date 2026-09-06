@@ -22,6 +22,8 @@ import signal
 import sys
 import time
 import uuid
+import wave
+import io
 from collections import defaultdict
 from typing import Any
 
@@ -30,6 +32,10 @@ import httpx
 from app.agent.summarizer import generate_spoken_summary
 from app.agent.tts import synthesize_speech
 from app.ingestion.transcript_ingestor import transcript_ingestor
+# New imports for mode/mute handling
+from sqlalchemy import select
+from app.db.session import AsyncSessionLocal
+from app.models.meeting import Meeting
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,6 +103,14 @@ def _get_channel_name(meeting_id: str) -> str:
     if not channel_name:
         raise ValueError(f"Meeting {meeting_id} has no channel_name set")
     return channel_name
+
+
+# ── Audio conversion helper ────────────────────────────────────────────────────
+
+def _wav_to_pcm(wav_bytes: bytes) -> bytes:
+    """Converts WAV audio data to raw PCM (16kHz, 16-bit, mono)."""
+    with wave.open(io.BytesIO(wav_bytes), 'rb') as wav_file:
+        return wav_file.readframes(wav_file.getnframes())
 
 
 # ── Deepgram Stream Manager ────────────────────────────────────────────────────
@@ -384,6 +398,23 @@ async def run_agent(meeting_id: str) -> None:
         f"(uid={agent_uid}, meeting={meeting_id[:8]}...)"
     )
 
+    # Initialize mode and mute flags
+    current_mode: str = "frequent"
+    muted: bool = False
+    _last_flag_check: float = time.monotonic()
+
+    async def _load_meeting_flags(meeting_id: str) -> tuple[str, bool]:
+        """Fetch default_mode and is_muted from the DB for the given meeting."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(Meeting).where(Meeting.id == meeting_id))
+            meeting = result.scalar_one_or_none()
+            if meeting is None:
+                logger.warning(f"Meeting {meeting_id} not found when loading flags")
+                return "frequent", False
+            mode = meeting.default_mode or "frequent"
+            muted_flag = bool(meeting.is_muted)
+            return mode, muted_flag
+
     # ── Step 10: Event loop with Cadence & Speech Guard ───────────────────────
     stop_event = asyncio.Event()
 
@@ -422,24 +453,36 @@ async def run_agent(meeting_id: str) -> None:
 
             # ── Periodic Spoken AI Voice Summary ──────────────────────────────
             if enable_spoken and not is_agent_speaking and (now - last_spoken_summary >= spoken_interval):
-                # Speech Guard: Ensure human participants have not spoken in the last 2 seconds
-                human_silence_duration = now - observer.last_human_audio_ts
-                if human_silence_duration >= 2.0:
-                    logger.info("[SPOKEN SUMMARY] Cadence reached & room quiet for %.1fs — generating spoken summary", human_silence_duration)
-                    is_agent_speaking = True
-                    try:
-                        summary_text = generate_spoken_summary(meeting_id)
-                        if summary_text:
-                            pcm_bytes = synthesize_speech(summary_text)
-                            if pcm_bytes:
-                                await play_spoken_summary_into_room(conn, pcm_bytes)
-                                last_spoken_summary = now
-                    except Exception as exc:
-                        logger.warning("Failed to play spoken summary: %s", exc)
-                    finally:
-                        is_agent_speaking = False
+                # Refresh mode/mute flags every 30 seconds
+                if now - _last_flag_check >= 30:
+                    current_mode, muted = await _load_meeting_flags(meeting_id)
+                    _last_flag_check = now
+                # Skip summary if muted
+                if muted:
+                    logger.info("[SPOKEN SUMMARY] Skipped because Sentinel is muted")
                 else:
-                    logger.info("[SPOKEN SUMMARY] Deferring spoken summary — human active within last %.1fs", human_silence_duration)
+                    # Speech Guard: Ensure human participants have not spoken in the last 2 seconds
+                    human_silence_duration = now - observer.last_human_audio_ts
+                    if human_silence_duration >= 2.0:
+                        # Mode handling: frequent always, occasional only on high‑priority events (simplified to always for now)
+                        if current_mode == "frequent" or (current_mode == "occasional" and False):
+                            logger.info("[SPOKEN SUMMARY] Cadence reached & room quiet for %.1fs — generating spoken summary", human_silence_duration)
+                            is_agent_speaking = True
+                            try:
+                                summary_text = generate_spoken_summary(meeting_id)
+                                if summary_text:
+                                    pcm_bytes = synthesize_speech(summary_text)
+                                    if pcm_bytes:
+                                        await play_spoken_summary_into_room(conn, pcm_bytes)
+                                        last_spoken_summary = now
+                            except Exception as exc:
+                                logger.warning("Failed to play spoken summary: %s", exc)
+                            finally:
+                                is_agent_speaking = False
+                        else:
+                            logger.info("[SPOKEN SUMMARY] Ocassional mode – skipping periodic summary")
+                    else:
+                        logger.info("[SPOKEN SUMMARY] Deferring spoken summary — human active within last %.1fs", human_silence_duration)
 
             # ── Token renewal before expiry (55-minute mark) ──────────────────
             if app_cert and (now - token_ts) >= TOKEN_RENEWAL_AT:

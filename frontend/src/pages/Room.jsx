@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import AgoraRTC from "agora-rtc-sdk-ng";
 import { avatarColor, getInitials } from "./CreateRoom";
+import ModeMuteControls from "../components/ModeMuteControls";
 
 // Suppress verbose Agora SDK logs in the browser console
 AgoraRTC.setLogLevel(3); // 3 = WARN
@@ -687,6 +688,7 @@ export default function Room() {
             </p>
           </div>
         </div>
+    <ModeMuteControls meetingId={id} />
         {phase === "live" && (
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button onClick={endMeeting} className="btn-leave" id="end-btn" style={{ background: "rgba(99,102,241,0.2)", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.4)" }}>

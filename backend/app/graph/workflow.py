@@ -17,6 +17,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.state import MeetingState
+# New imports for fetching mode/mute flags
+from sqlalchemy import select
+from app.db.session import AsyncSessionLocal
+from app.models.meeting import Meeting
 from app.reasoning.action_item_extraction import extract_action_items_node
 from app.reasoning.assumption_detection import detect_assumptions_node
 from app.reasoning.conflict_detection import detect_conflicts_node
@@ -76,6 +80,20 @@ def run_reasoning_pipeline(meeting_id: str, latest_segment: dict[str, Any]) -> d
     Keyed on thread_id = meeting_id for state persistence and checkpointer recovery.
     """
     config = {"configurable": {"thread_id": meeting_id}}
+    # Load mode and mute flags from DB (reuse runner helper logic)
+    async def _load_meeting_flags(meeting_id: str) -> tuple[str, bool]:
+        """Fetch default_mode and is_muted from the DB for the given meeting."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(Meeting).where(Meeting.id == meeting_id))
+            meeting = result.scalar_one_or_none()
+            mode = meeting.default_mode or "frequent"
+            muted = bool(meeting.is_muted)
+            return mode, muted
+
+    # Retrieve flags (synchronously within async context using asyncio.run) – safe because this function is async-aware
+    import asyncio
+    mode_flag, muted_flag = asyncio.run(_load_meeting_flags(meeting_id))
+
     initial_state = {
         "meeting_id": meeting_id,
         "latest_segment": latest_segment,
@@ -88,6 +106,8 @@ def run_reasoning_pipeline(meeting_id: str, latest_segment: dict[str, Any]) -> d
         "timeline_events": [],
         "risks": [],
         "evidence": [],
+        "mode": mode_flag,
+        "muted": muted_flag,
     }
 
     try:
